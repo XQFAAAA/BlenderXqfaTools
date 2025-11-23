@@ -1,5 +1,5 @@
-# blender-X-Bone+
-blender版本基于4.4开发
+# BlenderXqfaTools
+blender版本基于4.5开发
 现在无需依赖其他插件
 
 ## 提供姿态模式/编辑模式下的骨骼的相对骨架的变换信息，包含：

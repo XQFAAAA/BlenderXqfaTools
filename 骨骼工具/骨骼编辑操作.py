@@ -301,8 +301,8 @@ class O_BoneAllConnect(bpy.types.Operator):
 
 class O_BoneMoveTailToChild(bpy.types.Operator):
     bl_idname = "xbone.move_tail_to_child"
-    bl_label = "尾部对齐子级头部"
-    bl_description = "将选中骨骼的尾部移动到其唯一被选中的子级骨骼的头部位置"
+    bl_label = "选中骨骼尾部-->子级头部"
+    bl_description = "将选中骨骼的尾部移动到其子级骨骼的头部位置，按优先级选择子级"
 
     def execute(self, context):
         # 确保在编辑模式下
@@ -315,6 +315,17 @@ class O_BoneMoveTailToChild(bpy.types.Operator):
         if not armature_obj or armature_obj.type != 'ARMATURE':
             self.report({'WARNING'}, "未选择骨架对象")
             return {'CANCELLED'}
+        
+        # 根据骨架名称生成1-9的数字
+        def get_theme_number_from_name(name):
+            # 计算名称的简单哈希值
+            hash_value = 0
+            for char in name:
+                hash_value = (hash_value * 31 + ord(char)) % 9
+            return (hash_value % 9) + 1  # 确保在1-9范围内
+        
+        theme_number = get_theme_number_from_name(armature_obj.name)
+        theme_name = f"THEME0{theme_number}"
         
         # 获取当前选中的骨骼
         selected_bones = context.selected_editable_bones
@@ -329,8 +340,8 @@ class O_BoneMoveTailToChild(bpy.types.Operator):
         # 获取骨架的世界变换矩阵
         armature_matrix = armature_obj.matrix_world
         
-        # 记录成功移动的骨骼数量
-        moved_count = 0
+        # 记录成功移动的骨骼和对应的目标子级
+        moved_bones = []
         
         # 遍历所有选中的骨骼
         for bone in selected_bones:
@@ -340,16 +351,29 @@ class O_BoneMoveTailToChild(bpy.types.Operator):
             if not children:
                 continue
             
-            # 找出被选中的子级骨骼
-            selected_children = [child for child in children if child.name in selected_bone_names]
+            target_child = None
             
-            # 检查被选中的子级数量
-            if len(selected_children) == 1:
-                child_bone = selected_children[0]
-                
+            # 1. 判断骨骼的子级是否唯一（不受选中范围影响）
+            if len(children) == 1:
+                target_child = children[0]
+            
+            # 2. 如果有多个子级，找出只有一个有子级的子级
+            elif len(children) > 1:
+                children_with_children = [child for child in children if child.children]
+                if len(children_with_children) == 1:
+                    target_child = children_with_children[0]
+            
+            # 3. 最后判断子级在选中骨骼范围中是否唯一
+            if not target_child and len(children) > 1:
+                selected_children = [child for child in children if child.name in selected_bone_names]
+                if len(selected_children) == 1:
+                    target_child = selected_children[0]
+            
+            # 如果找到了目标子级，执行移动操作
+            if target_child:
                 # 将骨骼尾部和子级头部转换到世界坐标系
                 bone_tail_world = armature_matrix @ bone.tail
-                child_head_world = armature_matrix @ child_bone.head
+                child_head_world = armature_matrix @ target_child.head
                 
                 # 计算在世界坐标系中的移动向量
                 move_vector_world = child_head_world - bone_tail_world
@@ -370,7 +394,8 @@ class O_BoneMoveTailToChild(bpy.types.Operator):
                 # 使用transform.translate来移动尾部（在世界坐标系中）
                 bpy.ops.transform.translate(value=move_vector_world)
                 
-                moved_count += 1
+                # 记录成功移动的骨骼
+                moved_bones.append(bone)
         
         # 恢复原始选择状态
         bpy.ops.armature.select_all(action='DESELECT')
@@ -379,13 +404,25 @@ class O_BoneMoveTailToChild(bpy.types.Operator):
             bone.select_head = True
             bone.select_tail = True
         
-        if moved_count > 0:
-            self.report({'INFO'}, f"成功移动了 {moved_count} 个骨骼的尾部")
+        # 将成功移动的骨骼添加到骨骼集合中
+        if moved_bones:
+            # 创建或获取"尾部对齐骨骼"集合
+            tail_aligned_collection = armature_obj.data.collections.get("尾部对齐骨骼")
+            if not tail_aligned_collection:
+                tail_aligned_collection = armature_obj.data.collections.new("尾部对齐骨骼")
+            
+            # 将成功移动的骨骼添加到集合并设置颜色
+            for bone in moved_bones:
+                tail_aligned_collection.assign(bone)
+                bone.color.palette = theme_name
+            
+            self.report({'INFO'}, f"成功移动了 {len(moved_bones)} 个骨骼的尾部，并添加到'尾部对齐骨骼'集合，使用配色 {theme_name}")
         else:
             self.report({'WARNING'}, "没有符合条件的骨骼可以移动")
         
         return {'FINISHED'}
-    
+
+
 ########################## Divider ##########################
 
 class P_BoneEdit(bpy.types.Panel):

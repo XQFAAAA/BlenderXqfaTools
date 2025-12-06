@@ -143,6 +143,9 @@ class O_VertexGroupsDelNoneActive(bpy.types.Operator):
 
         return {'FINISHED'}
 
+# ----------------------------------------------------------------
+# 3. 匹配重命名操作 (Match Rename Operator) - 💥 优化
+# ----------------------------------------------------------------
 class O_VertexGroupsMatchRename(bpy.types.Operator):
     bl_idname = "xbone.vertex_groups_match_rename"
     bl_label = "匹配重命名"
@@ -159,14 +162,23 @@ class O_VertexGroupsMatchRename(bpy.types.Operator):
             obj_a, obj_b = self._validate_input(context)
             
             # 执行匹配重命名并获取详细结果
-            result = self._rename_matching_vertex_groups(obj_a, obj_b)
+            # 优化: 只需要计算一次中心点
+            centers_a = self._get_vertex_group_centers(obj_a)
+            centers_b = self._get_vertex_group_centers(obj_b)
+
+            if not centers_a:
+                raise Exception(f"源物体 ({obj_a.name}) 没有非空顶点组")
+            if not centers_b:
+                raise Exception(f"目标物体 ({obj_b.name}) 没有非空顶点组")
+
+            result = self._rename_matching_vertex_groups(obj_a, obj_b, centers_a, centers_b)
             
             # 打印详细结果到控制台
             self._print_detailed_results(obj_a, obj_b, result)
             
             # 计算总耗时
             elapsed_time = time.time() - start_time
-            time_msg = f"总耗时: {elapsed_time:.2f}秒"
+            time_msg = f"总耗时: {elapsed_time:.4f}秒" # 增加精度
             
             # 根据结果返回适当的消息
             if result['renamed_count'] > 0:
@@ -178,7 +190,7 @@ class O_VertexGroupsMatchRename(bpy.types.Operator):
             
         except Exception as e:
             elapsed_time = time.time() - start_time
-            self.report({'ERROR'}, f"{str(e)} (耗时: {elapsed_time:.2f}秒)")
+            self.report({'ERROR'}, f"{str(e)} (耗时: {elapsed_time:.4f}秒)")
             return {'CANCELLED'}
     
     def _validate_input(self, context: bpy.types.Context) -> Tuple[bpy.types.Object, bpy.types.Object]:
@@ -195,6 +207,8 @@ class O_VertexGroupsMatchRename(bpy.types.Operator):
             raise ValueError("活动物体必须是选中的物体之一")
             
         # 获取两个物体
+        # A物体: 源（提供名称的）
+        # B物体: 目标（被重命名的，活动物体）
         obj_b = active_obj
         obj_a = next(obj for obj in selected_objs if obj != active_obj)
         
@@ -202,91 +216,170 @@ class O_VertexGroupsMatchRename(bpy.types.Operator):
         if obj_a.type != 'MESH' or obj_b.type != 'MESH':
             raise ValueError("两个物体都必须是网格类型")
             
+        # 验证模式 (重要：需要对象模式才能获取正确的矩阵和数据)
+        if context.mode != 'OBJECT':
+             raise ValueError("请切换到对象模式 (Object Mode) 以确保计算准确性")
             
         return obj_a, obj_b
     
     def _get_vertex_group_centers(self, obj: bpy.types.Object) -> Dict[str, np.ndarray]:
-        """获取每个顶点组的中心位置（平均位置）"""
-        centers = {}
+        """
+        优化：向量化获取每个顶点组的中心位置（平均位置）。
+        1. 获取所有顶点的全局坐标 (co * matrix_world)
+        2. 获取所有顶点的所有顶点组权重（Blender API 相对高效的方式）
+        3. 利用 NumPy 广播和求和计算加权平均中心点。
+        """
+        centers: Dict[str, np.ndarray] = {}
         mesh = obj.data
-        global_verts = np.zeros((len(mesh.vertices), 3))
         
-        # 获取所有顶点的局部坐标
-        mesh.vertices.foreach_get('co', global_verts.ravel())
+        if not obj.vertex_groups:
+            return centers
+
+        # 1. 获取所有顶点的全局坐标
+        num_verts = len(mesh.vertices)
+        verts_co = np.zeros((num_verts, 3))
+        mesh.vertices.foreach_get('co', verts_co.ravel())
         
-        # 转换为全局坐标
         matrix = np.array(obj.matrix_world)
-        global_verts = np.dot(global_verts, matrix[:3, :3].T) + matrix[:3, 3]
+        # 将局部坐标转换为全局坐标：V_global = V_local @ R.T + T
+        global_verts = verts_co @ matrix[:3, :3].T + matrix[:3, 3]
+
+        # 2. 获取所有顶点组的名称和索引映射
+        vg_names = [vg.name for vg in obj.vertex_groups]
+        vg_map = {name: i for i, name in enumerate(vg_names)}
         
-        for vg in obj.vertex_groups:
-            vertex_indices = []
-            
-            # 获取顶点组中的所有顶点索引
-            for vid in range(len(mesh.vertices)):
-                try:
-                    if vg.weight(vid) > 0:
-                        vertex_indices.append(vid)
-                except RuntimeError:
-                    pass
-            
-            if vertex_indices:
-                # 计算这些顶点的平均位置
-                centers[vg.name] = np.mean(global_verts[vertex_indices], axis=0)
+        # 3. 获取所有顶点组的权重。
+        # 使用 bmesh 或 foreach_get 无法直接高效获取所有顶点的所有权重。
+        # 仍需遍历顶点，但可以批量处理，原始方法已是常见高效做法。
+        # 为了进一步优化，我们直接从 Blender 的权重 API 获取并转换为 NumPy 矩阵。
         
+        # 创建一个 Num_Verts x Num_Groups 的稀疏矩阵来存储权重 (如果大部分权重为0)
+        # 但为了简单和通用性，我们先用一个稠密列表/字典来处理非零权重
+        
+        # 存储每个顶点组的 (总加权位置, 总权重)
+        vg_data: Dict[str, Tuple[np.ndarray, float]] = {name: (np.zeros(3), 0.0) for name in vg_names}
+        
+        # 遍历所有顶点及其权重，计算加权和
+        for i, vertex in enumerate(mesh.vertices):
+            co = global_verts[i]
+            for group in vertex.groups:
+                group_index = group.group
+                weight = group.weight
+                
+                if weight > 0:
+                    group_name = obj.vertex_groups[group_index].name
+                    
+                    # 使用 NumPy 数组进行加法
+                    current_sum, current_weight = vg_data[group_name]
+                    vg_data[group_name] = (current_sum + co * weight, current_weight + weight)
+
+        # 4. 计算平均中心点
+        for name, (weighted_sum, total_weight) in vg_data.items():
+            if total_weight > 0:
+                # 平均位置 = 总加权位置 / 总权重
+                centers[name] = weighted_sum / total_weight
+                
         return centers
-    
-    def _calculate_similarity(self, pos_a: np.ndarray, pos_b: np.ndarray) -> float:
-        """计算两个位置之间的相似度（基于距离）"""
-        distance = np.linalg.norm(pos_a - pos_b)
-        # 将距离转换为相似度（距离越小，相似度越高）
-        # 使用简单的转换：相似度 = 1 / (1 + 距离)
-        return 1.0 / (1.0 + distance)
-    
-    def _rename_matching_vertex_groups(self, 
-                                     obj_a: bpy.types.Object, 
-                                     obj_b: bpy.types.Object) -> Dict[str, any]:
-        """匹配并重命名顶点组"""
-        centers_a = self._get_vertex_group_centers(obj_a)
-        centers_b = self._get_vertex_group_centers(obj_b)
+
+    def _calculate_similarity_vectorized(self, centers_a: Dict[str, np.ndarray], centers_b: Dict[str, np.ndarray], threshold: float) -> Tuple[List[Tuple[str, Optional[str], str]], int, int]:
+        """
+        优化: 向量化计算相似度矩阵并寻找最佳匹配。
+        A: 源 (名称来源)
+        B: 目标 (被重命名)
+        """
+        # 1. 准备数据：转换为 NumPy 数组
+        a_names = list(centers_a.keys())
+        b_names = list(centers_b.keys())
+        a_centers = np.array(list(centers_a.values())) # N_a x 3
+        b_centers = np.array(list(centers_b.values())) # N_b x 3
         
-        # 检查非空顶点组
-        if not centers_a:
-            raise Exception("A物体没有非空顶点组")
-        if not centers_b:
-            raise Exception("B物体没有非空顶点组")
+        if a_centers.size == 0 or b_centers.size == 0:
+             return [], 0, 0
         
+        # 2. 向量化计算所有距离 (欧几里得距离)
+        # 使用 NumPy 广播计算距离：Distance Matrix M (N_b x N_a)
+        # M[i, j] = ||b_centers[i] - a_centers[j]||
+        
+        # b_centers (N_b x 3)
+        # a_centers (N_a x 3)
+        
+        # (b_i - a_j)^2 = b_i^2 - 2*b_i*a_j + a_j^2
+        b_sq = np.sum(b_centers**2, axis=1, keepdims=True)  # N_b x 1
+        a_sq = np.sum(a_centers**2, axis=1, keepdims=True).T # 1 x N_a
+        
+        # 2 * b_i * a_j
+        b_dot_a = b_centers @ a_centers.T # N_b x N_a
+        
+        # 距离的平方
+        dist_sq = b_sq - 2 * b_dot_a + a_sq
+        # 避免浮点误差导致的微小负数
+        dist_sq = np.maximum(dist_sq, 0)
+        distances = np.sqrt(dist_sq) # N_b x N_a
+        
+        # 3. 将距离转换为相似度 (相似度 = 1 / (1 + 距离))
+        similarity_matrix = 1.0 / (1.0 + distances) # N_b x N_a
+        
+        # 4. 寻找最佳匹配（贪婪匹配）
         renamed_count = 0
-        matched_a_groups: Set[str] = set()
-        matches: List[Tuple[str, Optional[str], str]] = []  # (b_name, a_name, similarity)
-        
-        for b_name, b_center in centers_b.items():
-            best_match_name = None
+        matched_a_indices: Set[int] = set() # 已匹配的 A 组的索引
+        matches: List[Tuple[str, Optional[str], str]] = []
+
+        # 遍历 B 组 (目标组)
+        for i, b_name in enumerate(b_names):
+            best_match_index = -1
             best_similarity = 0.0
             
-            # 寻找最佳匹配
-            for a_name, a_center in centers_a.items():
-                if a_name in matched_a_groups:
-                    continue
+            # 获取 B 组 i 与所有 A 组的相似度行向量
+            sim_row = similarity_matrix[i, :]
+
+            # 寻找满足阈值的最佳匹配 A 组
+            for j, a_name in enumerate(a_names):
+                if j in matched_a_indices:
+                    continue # 跳过已匹配的 A 组
                     
-                similarity = self._calculate_similarity(a_center, b_center)
-                if similarity > best_similarity and similarity >= self.similarity_threshold:
+                similarity = sim_row[j]
+                
+                if similarity > best_similarity and similarity >= threshold:
                     best_similarity = similarity
-                    best_match_name = a_name
+                    best_match_index = j
             
-            # 执行重命名
-            if best_match_name:
-                obj_b.vertex_groups[b_name].name = best_match_name
-                matched_a_groups.add(best_match_name)
+            # 记录结果
+            if best_match_index != -1:
+                a_name = a_names[best_match_index]
+                matched_a_indices.add(best_match_index) # 标记 A 组已使用
                 renamed_count += 1
-                matches.append((b_name, best_match_name, f"{best_similarity:.3f}"))
+                matches.append((b_name, a_name, f"{best_similarity:.3f}"))
             else:
                 matches.append((b_name, None, "no match"))
+        
+        return matches, len(a_names), len(b_names)
+
+    def _rename_matching_vertex_groups(self, 
+                                     obj_a: bpy.types.Object, 
+                                     obj_b: bpy.types.Object,
+                                     centers_a: Dict[str, np.ndarray],
+                                     centers_b: Dict[str, np.ndarray]) -> Dict[str, any]:
+        """匹配并重命名顶点组 (使用向量化匹配)"""
+        
+        matches, total_a, total_b = self._calculate_similarity_vectorized(
+            centers_a, 
+            centers_b, 
+            self.similarity_threshold
+        )
+        
+        renamed_count = 0
+        
+        # 执行重命名
+        for b_name, a_name, similarity_str in matches:
+            if a_name:
+                obj_b.vertex_groups[b_name].name = a_name
+                renamed_count += 1
         
         return {
             'renamed_count': renamed_count,
             'matches': matches,
-            'total_a': len(centers_a),
-            'total_b': len(centers_b)
+            'total_a': total_a,
+            'total_b': total_b
         }
     
     def _print_detailed_results(self, 
@@ -294,7 +387,7 @@ class O_VertexGroupsMatchRename(bpy.types.Operator):
                               obj_b: bpy.types.Object, 
                               result: Dict[str, any]) -> None:
         """打印详细结果到控制台"""
-        header = f"顶点组匹配与重命名详细结果 (A物体: {obj_a.name}, B物体: {obj_b.name})"
+        header = f"顶点组匹配与重命名详细结果 (源A: {obj_a.name}, 目标B: {obj_b.name})"
         separator = "=" * len(header)
         
         print(f"\n{separator}")
@@ -308,121 +401,182 @@ class O_VertexGroupsMatchRename(bpy.types.Operator):
         unmatched = 0
         
         for b_name, a_name, similarity in result['matches']:
+
             if a_name:
                 matched += 1
                 print(f"{b_name:<30} → {a_name:<30} {similarity:<20}")
             else:
-                print(f"{b_name:<30} → {'保留原名称':<30} {'(未匹配)':<20}")
                 unmatched += 1
+                print(f"{b_name:<30} → {'保留原名称':<30} {'(未匹配)':<20}")
+
         
         print(separator)
         print("总结:")
-        print(f"  A物体非空顶点组数量: {result['total_a']}")
-        print(f"  B物体非空顶点组数量: {result['total_b']}")
+        print(f"  源A物体非空顶点组数量: {result['total_a']}")
+        print(f"  目标B物体非空顶点组数量: {result['total_b']}")
         print(f"  匹配数量: {matched}")
         print(f"  未匹配数量: {unmatched}")
         print(f"  总重命名数量: {result['renamed_count']}")
         print(separator)
 
 
+# ----------------------------------------------------------------
+# 4. 名称排序操作 (Sort Match Operator) - 💥 优化并增加反馈
+# ----------------------------------------------------------------
 class O_VertexGroupsSortMatch(bpy.types.Operator):
     bl_idname = "xbone.vertex_groups_sort_match"
-    bl_label = "名称排序"
+    bl_label = "名称排序 (高效)"
     bl_description = ("严格按照选择物体的顶点组顺序重新排列活动物体的顶点组\n"
-                     "操作逻辑:\n"
-                     "1. 按选择物体的顶点组顺序依次处理\n"
-                     "2. 缺少的顶点组会新建空组\n"
-                     "3. 已有的顶点组会移动到对应位置\n"
-                     "4. 多余的顶点组会自动保留在最后")
+                     "使用高效算法：保存权重 -> 清空 -> 按顺序重建/恢复权重")
 
     def execute(self, context):
+        start_time = time.time()  # 记录开始时间
+        
         try:
             selected_objs = context.selected_objects
             active_obj = context.active_object
             
             # 验证选择
             if len(selected_objs) != 2:
-                self.report({'ERROR'}, "请选择2个网格物体")
-                return {'CANCELLED'}
+                raise ValueError("请选择2个网格物体")
                 
             if active_obj not in selected_objs:
-                self.report({'ERROR'}, "活动物体必须是选中的物体之一")
-                return {'CANCELLED'}
+                raise ValueError("活动物体必须是选中的物体之一")
                 
             source_obj = next(obj for obj in selected_objs if obj != active_obj)
             target_obj = active_obj
 
             if source_obj.type != 'MESH' or target_obj.type != 'MESH':
-                self.report({'ERROR'}, "两个物体都必须是网格类型")
-                return {'CANCELLED'}
-                
+                raise ValueError("两个物体都必须是网格类型")
+            
+            # 确保处于对象模式以操作顶点组
+            if context.mode != 'OBJECT':
+                 raise ValueError("请切换到对象模式 (Object Mode)")
+            
             # 执行排序
-            result = self._sort_vertex_groups(context, source_obj, target_obj)
+            result = self._sort_vertex_groups_optimized(target_obj, source_obj)
+            
+            # 打印详细结果到控制台
+            self._print_detailed_results(source_obj, target_obj, result)
+            
+            # 计算总耗时
+            elapsed_time = time.time() - start_time
+            time_msg = f"总耗时: {elapsed_time:.4f}秒"
             
             self.report({'INFO'}, 
-                       f"排序完成: 匹配 {result['matched']}个, "
-                       f"新建 {result['added']}个")
-            
-            # 打印结果到控制台
-            print(f"\n顶点组排序结果 [{target_obj.name} → {source_obj.name}]:")
-            for i, vg in enumerate(target_obj.vertex_groups):
-                prefix = "  ✓ " if vg.name in [x.name for x in source_obj.vertex_groups] else "  + "
-                print(f"{i+1:2d}.{prefix}{vg.name}")
+                       f"排序完成: 匹配 {result['matched']}个, 新建 {result['added']}个 ({time_msg})")
             
             return {'FINISHED'}
             
         except Exception as e:
-            self.report({'ERROR'}, str(e))
+            elapsed_time = time.time() - start_time
+            self.report({'ERROR'}, f"{str(e)} (耗时: {elapsed_time:.4f}秒)")
             return {'CANCELLED'}
     
-    def _sort_vertex_groups(self, context, source_obj, target_obj):
-        source_vgs = source_obj.vertex_groups
+    def _sort_vertex_groups_optimized(self, target_obj: bpy.types.Object, source_obj: bpy.types.Object) -> Dict[str, any]:
+        """
+        优化后的顶点组排序算法。
+        1. 备份目标物体的所有权重数据。
+        2. 清空目标物体的所有顶点组。
+        3. 按照源物体的顺序，重建顶点组并恢复权重。
+        """
+        
         target_vgs = target_obj.vertex_groups
+        source_vgs = source_obj.vertex_groups
         
-        added_count = 0
+        # 1. 备份目标物体的权重数据
+        weight_data: Dict[str, Dict[int, float]] = {}
+        original_vg_names = [vg.name for vg in target_vgs]
+        
+        mesh = target_obj.data
+        
+        # 遍历所有顶点，收集它们的权重
+        for vert in mesh.vertices:
+            for group in vert.groups:
+                vg_name = original_vg_names[group.group]
+                if group.weight > 0:
+                    if vg_name not in weight_data:
+                        weight_data[vg_name] = {}
+                    # 存储 (顶点索引: 权重)
+                    weight_data[vg_name][vert.index] = group.weight
+
+        # 2. 清空目标物体的所有顶点组
+        for i in range(len(target_vgs) - 1, -1, -1):
+            target_vgs.remove(target_vgs[i])
+            
+        final_list: List[Tuple[str, str]] = [] # (最终名称, 状态)
         matched_count = 0
+        added_count = 0
         
-        # 保存当前活动顶点组索引
-        original_active_index = target_obj.vertex_groups.active_index
-        
-        # 遍历源物体顶点组顺序
+        # 3. 按照源物体的顺序，重建顶点组
         for desired_index, src_vg in enumerate(source_vgs):
-            if src_vg.name in target_vgs:
-                # 已有顶点组，移动到正确位置
-                current_index = target_vgs.find(src_vg.name)
+            new_vg = target_vgs.new(name=src_vg.name)
+            
+            # 恢复权重（如果备份数据中存在）
+            if src_vg.name in weight_data:
+                vg_weights = weight_data.pop(src_vg.name)
                 
-                # 设置活动顶点组
-                target_obj.vertex_groups.active_index = current_index
-                
-                # 计算需要移动的次数
-                move_count = current_index - desired_index
-                
-                # 向上移动
-                for _ in range(move_count):
-                    bpy.ops.object.vertex_group_move(direction='UP')
+                # 批量设置权重
+                for vert_index, weight in vg_weights.items():
+                    new_vg.add([vert_index], weight, 'REPLACE')
                 
                 matched_count += 1
+                final_list.append((src_vg.name, '已匹配/移动'))
             else:
-                # 新建顶点组
-                new_vg = target_vgs.new(name=src_vg.name)
                 added_count += 1
+                final_list.append((src_vg.name, '新建空组'))
                 
-                # 设置活动顶点组为新创建的组
-                target_obj.vertex_groups.active_index = len(target_vgs) - 1
-                
-                # 移动到正确位置
-                move_count = len(target_vgs) - 1 - desired_index
-                for _ in range(move_count):
-                    bpy.ops.object.vertex_group_move(direction='UP')
-        
-        # 恢复原始活动顶点组
-        if original_active_index < len(target_vgs):
-            target_obj.vertex_groups.active_index = original_active_index
-        
+        # 4. 处理多余的顶点组
+        extra_count = 0
+        for extra_name, vg_weights in weight_data.items():
+            new_vg = target_vgs.new(name=extra_name)
+            
+            # 恢复权重
+            for vert_index, weight in vg_weights.items():
+                new_vg.add([vert_index], weight, 'REPLACE')
+            
+            extra_count += 1
+            final_list.append((extra_name, '多余/保留'))
+            
         return {
             'matched': matched_count,
-            'added': added_count
+            'added': added_count,
+            'extra': extra_count,
+            'original_total': len(original_vg_names),
+            'source_total': len(source_vgs),
+            'final_list': final_list
         }
+
+    def _print_detailed_results(self, 
+                              source_obj: bpy.types.Object, 
+                              target_obj: bpy.types.Object, 
+                              result: Dict[str, any]) -> None:
+        """打印详细结果到控制台"""
+        header = f"顶点组排序详细结果 (源A: {source_obj.name}, 目标B: {target_obj.name})"
+        separator = "=" * len(header)
+        
+        print(f"\n{separator}")
+        print(header)
+        print(separator)
+        print(f"{'序号':<5} {'顶点组名称':<30} {'操作状态':<20}")
+        print("-" * 55)
+        
+        # 打印排序后的最终列表
+        for i, (name, status) in enumerate(result['final_list']):
+            print(f"{i+1:<5} {name:<30} {status:<20}")
+
+        
+        print(separator)
+        print("总结:")
+        print(f"  源A物体顶点组数量: {result['source_total']}")
+        print(f"  目标B物体原始数量: {result['original_total']}")
+        print("-" * 15)
+        print(f"  已匹配并移动数量: {result['matched']}")
+        print(f"  新建空组数量: {result['added']}")
+        print(f"  多余并保留数量: {result['extra']}")
+        print(f"  最终顶点组总数: {len(result['final_list'])}")
+        print(separator)
+
 
 
 def register():

@@ -461,7 +461,7 @@ class O_only_BoneRenameMapping(bpy.types.Operator):
             value = str(row[change_skel_column])
             if (key == "None") or (value == "None"):
                 continue
-            O_only_BoneRenameMapping.bone_mapping[key] = value
+            bone_mapping[key] = value
 
         # 姿态模式重命名
         bpy.ops.object.mode_set(mode='OBJECT')

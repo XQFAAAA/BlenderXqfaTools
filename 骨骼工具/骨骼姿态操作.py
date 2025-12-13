@@ -468,22 +468,11 @@ class O_SwapPoseRest(bpy.types.Operator):
 class O_InCSVSel(bpy.types.Operator, ImportHelper):
     bl_idname = "xbone.csv_bone_sel"
     bl_label = "导入CSV并选择骨骼"
-    bl_description = "导入时右上角选择编码格式"
+    bl_description = ""
     filename_ext = ".csv"
     filter_glob: bpy.props.StringProperty(
         default="*.csv",
         options={'HIDDEN'},
-    )
-
-    # 添加编码选择属性
-    encoding: bpy.props.EnumProperty(
-        name="文件编码",
-        description="选择CSV文件的编码格式",
-        items=[
-            ('utf-8', "UTF-8", "标准UTF-8编码"),
-            ('gbk', "GBK", "简体中文编码"),
-        ],
-        default='utf-8',
     )
 
     def execute(self, context):
@@ -494,45 +483,58 @@ class O_InCSVSel(bpy.types.Operator, ImportHelper):
         if not csv_file or not os.path.exists(csv_file):
             self.report({'ERROR'}, "请选择有效的CSV文件")
             return {'CANCELLED'}
-
-        try:
-            # 读取CSV文件
-            with open(csv_file, 'r', newline='', encoding=self.encoding) as file:
-                reader = csv.reader(file)
-                # 跳过标题行，从第二行开始读取数据
-                next(reader)  # 跳过第一行
-                
-                for row in reader:
-                    if len(row) <= bone_sel_col:
-                        continue  # 跳过列数不足的行
-                    value = str(row[bone_sel_col]).strip()
-                    if not value or value == "None":
-                        continue
-                    bone_sel.append(value)
-
-        except UnicodeDecodeError:
-            self.report({'ERROR'}, f"无法用{self.encoding}解码文件，请尝试其他编码")
-            return {'CANCELLED'}
-        except Exception as e:
-            self.report({'ERROR'}, f"导入CSV文件时出现错误: {e}")
-            return {'CANCELLED'}
         
-        # 选择骨骼
-        bpy.ops.pose.select_all(action='DESELECT')
-        selected_count = 0
-        for bone_name in bone_sel:
-            # 使用更可靠的选择方式
-            if bone_name in context.active_object.pose.bones:
-                context.active_object.pose.bones[bone_name].bone.select = True
-                selected_count += 1
+        # 尝试的编码顺序
+        encodings = ['utf-8', 'gbk', 'utf-16']
+        
+        for encoding in encodings:
+            try:
+                # 读取CSV文件
+                with open(csv_file, 'r', newline='', encoding=encoding) as file:
+                    reader = csv.reader(file)
+                    # 跳过标题行，从第二行开始读取数据
+                    next(reader)  # 跳过第一行
+                    
+                    for row in reader:
+                        if len(row) <= bone_sel_col:
+                            continue  # 跳过列数不足的行
+                        value = str(row[bone_sel_col]).strip()
+                        if not value or value == "None":
+                            continue
+                        bone_sel.append(value)
+                
+                # 选择骨骼
+                bpy.ops.pose.select_all(action='DESELECT')
+                selected_count = 0
+                for bone_name in bone_sel:
+                    # 使用更可靠的选择方式
+                    if bone_name in context.active_object.pose.bones:
+                        context.active_object.pose.bones[bone_name].bone.select = True
+                        selected_count += 1
 
-        self.report({'INFO'}, f"已选择 {selected_count}/{len(bone_sel)} 个骨骼")
-        return {'FINISHED'}
+                self.report({'INFO'}, f"已选择 {selected_count}/{len(bone_sel)} 个骨骼")
+                return {'FINISHED'}
+            
+            except UnicodeDecodeError:
+                continue
+            except Exception as e:
+                self.report({'ERROR'}, f"导入CSV文件时出现错误: {e}")
+                return {'CANCELLED'}
+        
 
 class O_BonePosePrint(bpy.types.Operator):
     bl_idname = "xbone.pose_print"
-    bl_label = ""
+    bl_label = "复制选中骨骼名称"
     bl_description = "打印并复制选择的骨骼名称到剪贴板"
+    
+    @classmethod
+    def poll(cls, context):
+        """检查是否满足操作条件"""
+        # 必须有一个选中的物体，且是骨架类型，并且当前处于姿态模式
+        return (context.object and 
+                context.object.type == 'ARMATURE' and 
+                context.object.mode == 'POSE' and
+                context.selected_pose_bones)
     
     def execute(self, context):
         selected_bones = context.selected_pose_bones
@@ -1016,6 +1018,81 @@ class O_BonePoseXYZResizeToActive(bpy.types.Operator):
         self.report({'INFO'}, f"父级骨骼 '{pose_bone_P.name}' 在{resize_orient}坐标系下缩放 {scale_factor:.3f}倍 (轴向: {', '.join(axis_info)})")
         return {'FINISHED'}
 
+class O_BonePoseUnlockAll(bpy.types.Operator):
+    """解除所有选中骨骼的变换锁定（位置、旋转、缩放）"""
+    bl_idname = "xbone.pose_unlock_all"
+    bl_label = "解除所有锁定"
+    bl_description = "解除选中骨骼的位置、旋转和缩放的全部锁定"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    @classmethod
+    def poll(cls, context):
+        """检查是否满足操作条件"""
+        # 必须有一个选中的物体，且是骨架类型，并且当前处于姿态模式
+        return (context.object and 
+                context.object.type == 'ARMATURE' and 
+                context.object.mode == 'POSE' and
+                context.selected_pose_bones)
+
+    def execute(self, context):
+        selected_bones = context.selected_pose_bones
+        unlocked_count = 0
+        
+        for pbone in selected_bones:
+            # 1. 解除位置锁定 (X, Y, Z)
+            pbone.lock_location[0] = False
+            pbone.lock_location[1] = False
+            pbone.lock_location[2] = False
+            
+            # 2. 解除旋转锁定 (X, Y, Z)
+            # 注意：如果使用四元数旋转，这三个可能无效
+            pbone.lock_rotation[0] = False
+            pbone.lock_rotation[1] = False
+            pbone.lock_rotation[2] = False
+            
+            # 3. 解除四元数（W）的锁定（用于四元数模式）
+            pbone.lock_rotation_w = False
+            
+            # 4. 解除缩放锁定 (X, Y, Z)
+            pbone.lock_scale[0] = False
+            pbone.lock_scale[1] = False
+            pbone.lock_scale[2] = False
+            
+            unlocked_count += 1
+            
+        self.report({'INFO'}, f"已解除 {unlocked_count} 个骨骼的所有变换锁定")
+        return {'FINISHED'}
+
+class O_BonePoseRemoveAllConstraints(bpy.types.Operator):
+    """去除所有选中骨骼的约束"""
+    bl_idname = "xbone.pose_remove_all_constraints"
+    bl_label = "去除所有约束"
+    bl_description = "移除所有选中骨骼上的所有姿态约束"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        """检查是否满足操作条件"""
+        # 必须有一个选中的物体，且是骨架类型，并且当前处于姿态模式
+        return (context.object and 
+                context.object.type == 'ARMATURE' and 
+                context.object.mode == 'POSE' and
+                context.selected_pose_bones)
+
+    def execute(self, context):
+        selected_bones = context.selected_pose_bones
+        removed_count = 0
+        
+        for pbone in selected_bones:
+            if pbone.constraints:
+                # 遍历并移除所有约束
+                # 注意：从后向前遍历列表并在循环中删除元素通常更安全
+                for constraint in reversed(pbone.constraints):
+                    pbone.constraints.remove(constraint)
+                    removed_count += 1
+            
+        self.report({'INFO'}, f"已从 {len(selected_bones)} 根骨骼上移除 {removed_count} 个约束")
+        return {'FINISHED'}
 
 class P_BonePose(bpy.types.Panel):
     bl_idname = "X_PT_BonePose"
@@ -1044,17 +1121,19 @@ class P_BonePose(bpy.types.Panel):
             row.operator(O_BonePoseX90.bl_idname, text="X 90", icon="DRIVER_ROTATIONAL_DIFFERENCE")
             row.operator(O_BonePoseY90.bl_idname, text="Y 90", icon="DRIVER_ROTATIONAL_DIFFERENCE")
             row.operator(O_BonePoseZ90.bl_idname, text="Z 90", icon="DRIVER_ROTATIONAL_DIFFERENCE")
+            
             #快速应用为静止姿态，而物体不形变（先物体应用骨骼修改器）
             col = layout.column(align=True)
+            col.operator(O_BonePoseApply.bl_idname, text=O_BonePoseApply.bl_label)
+            col.operator(O_SwapPoseRest.bl_idname, text=O_SwapPoseRest.bl_label)
             row = col.row(align=True)
-            row.operator(O_BonePoseApply.bl_idname, text=O_BonePoseApply.bl_label)
-            row.operator(O_SwapPoseRest.bl_idname, text=O_SwapPoseRest.bl_label)
-
-            col = layout.column(align=True)
-            row = col.row(align=True)
-            row.prop(context.scene, "bone_sel_col", text="索引")
+            row.prop(context.scene, "bone_sel_col", text="csv索引")
             row.operator(O_InCSVSel.bl_idname, text=O_InCSVSel.bl_label)
+            row = col.row(align=True)
             row.operator(O_BonePosePrint.bl_idname, text=O_BonePosePrint.bl_label, icon='COPYDOWN')
+            row = col.row(align=True)
+            row.operator(O_BonePoseUnlockAll.bl_idname, text=O_BonePoseUnlockAll.bl_label, icon='UNLOCKED')
+            row.operator(O_BonePoseRemoveAllConstraints.bl_idname, text=O_BonePoseRemoveAllConstraints.bl_label, icon='X')
 
             # 移动功能
             col = layout.column(align=True)
@@ -1101,7 +1180,9 @@ class P_BonePose(bpy.types.Panel):
 
             # 骨骼矩阵
             row = layout.row()
-            row.label(text=f"{context.active_object.name}: {context.active_pose_bone.name}")
+            active_object = context.active_object.name if context.active_object else "无活动对象"
+            active_pose_bone = context.active_pose_bone.name if context.active_pose_bone else "无活动骨骼"
+            row.label(text=f"{active_object}: {active_pose_bone}")
             row.prop(props, "pose_matrix", text="", icon='OBJECT_DATA', toggle=True)
             if props.pose_matrix:
                 split = layout.split(align=True)
@@ -1138,8 +1219,7 @@ class P_BonePose(bpy.types.Panel):
                 row.prop(context.active_pose_bone, "matrix", index=11, text="")
                 row.prop(context.active_pose_bone, "matrix", index=15, text="")
 
-            #局部矩阵
-            if props.pose_matrix:
+                #局部矩阵
                 #col.prop(context.active_pose_bone, "matrix_basis", text="矩阵")
                 col.label(text="局部姿态矩阵:")
                 row = col.row(align=True) #align消除间距
@@ -1191,6 +1271,8 @@ def register():
     bpy.utils.register_class(O_BonePoseRotateToActive)
     bpy.utils.register_class(O_BonePoseXYZRotateToActive)
     bpy.utils.register_class(O_BonePoseXYZResizeToActive)
+    bpy.utils.register_class(O_BonePoseUnlockAll)
+    bpy.utils.register_class(O_BonePoseRemoveAllConstraints)
     bpy.utils.register_class(P_BonePose)
 
 
@@ -1217,4 +1299,6 @@ def unregister():
     bpy.utils.unregister_class(O_BonePoseRotateToActive)
     bpy.utils.unregister_class(O_BonePoseXYZRotateToActive)
     bpy.utils.unregister_class(O_BonePoseXYZResizeToActive)
+    bpy.utils.unregister_class(O_BonePoseUnlockAll)
+    bpy.utils.unregister_class(O_BonePoseRemoveAllConstraints)
     bpy.utils.unregister_class(P_BonePose)

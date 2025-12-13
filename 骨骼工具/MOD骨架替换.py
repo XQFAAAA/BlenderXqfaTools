@@ -14,7 +14,7 @@ class ObjType(bpy.types.Operator):
 class O_ImportCSV(bpy.types.Operator, ImportHelper):
     bl_idname = "xbone.csv_import"
     bl_label = "导入CSV"
-    bl_description = "导入时右上角选择编码格式"
+    bl_description = ""
     filename_ext = ".csv"
     filter_glob: bpy.props.StringProperty(
         default="*.csv",
@@ -69,8 +69,8 @@ class O_BoneSimpleMapping(bpy.types.Operator):
         csv_data = json.loads(context.scene["xbone_csv_data"])
         simple_main_column = context.scene.simple_main_column #0开始数列
         simple_save_column = context.scene.simple_save_column
-        simple_toactive_column = context.scene.simple_toactive_column
         simple_active_column = context.scene.simple_active_column
+        simple_toactive_column = context.scene.simple_toactive_column
         bone_main = []
         bone_save = []
         bone_mapping = {}
@@ -97,7 +97,7 @@ class O_BoneSimpleMapping(bpy.types.Operator):
                 continue
             key = str(row[simple_toactive_column])
             value = str(row[simple_active_column])
-            if (not key) or (key == "None"):
+            if (not key) or (key == "None") or (not value) or (value == "None"):
                 continue
             bone_mapping[key] = value
 
@@ -138,11 +138,10 @@ class O_BoneSimpleMapping(bpy.types.Operator):
                 save_collection.assign(bone)
                 bone.color.palette = 'THEME09'
 
-        bpy.ops.pose.select_all(action='DESELECT')
         # 执行特定合并
         for simple_toactive_name, simple_active_name in bone_mapping.items():
-            if simple_active_name == "":
-                continue
+            bpy.ops.pose.select_all(action='DESELECT')
+            bpy.ops.object.select_pattern(pattern=simple_toactive_name)
             SourceArmature.data.bones.active = SourceArmature.data.bones[simple_active_name]
             bpy.ops.xbone.merge_to_active()
 
@@ -298,16 +297,18 @@ class O_BoneRenameMapping(bpy.types.Operator):
                 print(f"{source_bone_name}不存在")
 
         # 保留骨骼的父级记录
-        for bone in bone_save:
-            SourceArmature.data.bones.active = SourceArmature.data.bones[bone]
-            bpy.ops.pose.select_hierarchy(direction='PARENT', extend=True)
-            for bone_exist in bone_save:
-                if context.active_pose_bone.name == bone_exist:
-                    break
-            else: # 遍历正常完成的最后执行
-                key = bone
-                value = context.active_pose_bone.name
-                bone_save_parent[key] = value
+        for bone_name in bone_save:
+            pose_bone = SourceArmature.pose.bones.get(bone_name)
+
+            if pose_bone and pose_bone.parent:
+                parent_bone_name = pose_bone.parent.name
+                
+                # 检查直系父级是否在 bone_save 列表中
+                if parent_bone_name not in bone_save:
+                    # 记录：当前骨骼(key) -> 直系父级骨骼(value)
+                    key = bone_name
+                    value = parent_bone_name
+                    bone_save_parent[key] = value
 
         # 应用原骨架
         bpy.ops.object.mode_set(mode='OBJECT')
@@ -335,6 +336,9 @@ class O_BoneRenameMapping(bpy.types.Operator):
             bpy.ops.object.select_pattern(pattern=bone)
         bpy.ops.armature.select_all(action='INVERT') # 反选
         bpy.ops.armature.delete()
+        # 清理原骨架集合
+        for i in range(len(SourceArmature.data.collections) - 1, -1, -1):
+            SourceArmature.data.collections.remove(SourceArmature.data.collections[i])
 
        # 骨架合并
         bpy.ops.object.mode_set(mode='OBJECT')
@@ -500,8 +504,8 @@ class P_BoneMapping(bpy.types.Panel):
         row.prop(context.scene, "simple_main_column")
         row.prop(context.scene, "simple_save_column")
         row = col.row(align=True)
-        row.prop(context.scene, "simple_toactive_column")
         row.prop(context.scene, "simple_active_column")
+        row.prop(context.scene, "simple_toactive_column")
         # 添加按钮
         col.operator(O_BoneSimpleMapping.bl_idname, icon="PLAY")
 
@@ -606,32 +610,32 @@ def register():
     ########################## Divider ##########################
     bpy.types.Scene.simple_main_column = bpy.props.IntProperty(
         name="主骨骼",
-        description="主要骨骼的列索引\n0是第1列",
+        description="主要骨骼的列索引",
         default=1,
         min=0,
     )
     bpy.types.Scene.simple_save_column = bpy.props.IntProperty(
         name="保留骨",
-        description="可以后续调整物理的骨骼列索引\n0是第1列",
+        description="可以后续调整物理的骨骼列索引",
         default=2,
         min=0,
     )
-    bpy.types.Scene.simple_toactive_column = bpy.props.IntProperty(
-        name="被合并骨",
-        description="会被合并至父级的骨骼\n0是第1列",
+    bpy.types.Scene.simple_active_column = bpy.props.IntProperty(
+        name="指定骨",
+        description="",
         default=3,
         min=0,
     )
-    bpy.types.Scene.simple_active_column = bpy.props.IntProperty(
-        name="活动骨",
-        description="不用填，这功能我没写\n0是第1列",
+    bpy.types.Scene.simple_toactive_column = bpy.props.IntProperty(
+        name="合并到指定",
+        description="会被合并至指定的骨骼",
         default=4,
         min=0,
     )
     ########################## Divider ##########################
     bpy.types.Scene.key_column = bpy.props.IntProperty(
         name="源骨架",
-        description="源骨架将复制目标骨架位置\n0是第1列",
+        description="源骨架将复制目标骨架位置",
         default=0,
         min=0,
     )

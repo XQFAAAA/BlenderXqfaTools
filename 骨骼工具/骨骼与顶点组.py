@@ -229,12 +229,16 @@ class O_RemoveBoneNumber(bpy.types.Operator):
 ########################## Divider ##########################
 
 
-def get_armature_objects(context):
-    """获取场景中所有受骨骼绑定的物体"""
+def get_armature_objects(context, armature):
+    """获取场景中绑定到特定骨架的物体"""
     armature_objs = []
     for obj in context.scene.objects:
-        if obj.type == 'MESH' and obj.find_armature():
-            armature_objs.append(obj)
+        if obj.type == 'MESH':
+            # 遍历物体的修改器，寻找指向当前骨架的 Armature 修改器
+            for mod in obj.modifiers:
+                if mod.type == 'ARMATURE' and mod.object == armature:
+                    armature_objs.append(obj)
+                    break # 找到一个匹配的修改器即可
     return armature_objs
 
 def merge_vertex_groups(obj, source_bone, target_bone):
@@ -288,7 +292,7 @@ class BONE_OT_merge_to_parent(bpy.types.Operator):
     def execute(self, context):
         armature = context.active_object
         selected_bones = context.selected_pose_bones
-        armature_objs = get_armature_objects(context)
+        armature_objs = get_armature_objects(context, armature)
         
         # 按层级从高到低排序选择的骨骼
         sorted_bones = sorted(selected_bones, key=lambda b: len(b.parent_recursive), reverse=True)
@@ -353,7 +357,7 @@ class BONE_OT_merge_to_active(bpy.types.Operator):
         armature = context.active_object
         selected_bones = context.selected_pose_bones
         active_bone = context.active_pose_bone
-        armature_objs = get_armature_objects(context)
+        armature_objs = get_armature_objects(context, armature)
         
         # 确保活动骨骼在选中的骨骼中
         if active_bone not in selected_bones:

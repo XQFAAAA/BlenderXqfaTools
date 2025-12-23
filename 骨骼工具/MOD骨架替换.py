@@ -54,115 +54,113 @@ class O_ImportCSV(bpy.types.Operator, ImportHelper):
 class O_BoneSimpleMapping(bpy.types.Operator):
     bl_idname = "xbone.simple_mapping"
     bl_label = "简化骨骼"
-    bl_description = ""
-    
+    bl_description = "根据CSV映射表保留主骨骼、处理合并逻辑并清理多余骨骼"
+
     def execute(self, context):
-        if context.scene.xbone_csv_data == "":
-            self.report({'ERROR'}, "似乎没有导入CSV文件") 
-            return {'FINISHED'}
+        scene = context.scene
+        # 1. 安全检查
+        if not scene.xbone_csv_data:
+            self.report({'ERROR'}, "请先导入CSV文件")
+            return {'CANCELLED'}
+        
+        target_obj = scene.simple_source_armature
+        if not target_obj or target_obj.type != 'ARMATURE':
+            self.report({'ERROR'}, "目标骨架对象无效")
+            return {'CANCELLED'}
+
         try:
-            SourceArmature = bpy.data.objects.get(context.scene.simple_source_armature.name)
-        except:
-            self.report({'ERROR'}, "似乎没有选择对象") 
-            return {'FINISHED'}
+            csv_data = json.loads(scene.xbone_csv_data)
+        except Exception as e:
+            self.report({'ERROR'}, f"解析CSV数据失败: {e}")
+            return {'CANCELLED'}
+
+        # 2. 提取配置
+        cols = {
+            'main': scene.simple_main_column,
+            'save': scene.simple_save_column,
+            'active': scene.simple_active_column,
+            'to_active': scene.simple_toactive_column
+        }
         
-        csv_data = json.loads(context.scene["xbone_csv_data"])
-        simple_main_column = context.scene.simple_main_column #0开始数列
-        simple_save_column = context.scene.simple_save_column
-        simple_active_column = context.scene.simple_active_column
-        simple_toactive_column = context.scene.simple_toactive_column
-        bone_main = []
-        bone_save = []
+        bone_main = set()
+        bone_save = set()
         bone_mapping = {}
-        
-        # 读取CSV的数据，跳过标题行(第一行)
-        for row in csv_data[1:]:
-            if len(row) <= simple_main_column:
-                continue
-            value = str(row[simple_main_column])
-            if (not value) or (value == "None"):
-                continue
-            bone_main.append(value)
 
+        # 3. 单次遍历解析 CSV 数据 (优化点：将之前的 3 个循环合并为一个)
         for row in csv_data[1:]:
-            if len(row) <= simple_save_column:
-                continue
-            value = str(row[simple_save_column])
-            if (not value) or (value == "None"):
-                continue
-            bone_save.append(value)
+            row_len = len(row)
+            
+            # 提取主骨骼和保留骨骼
+            for key, attr in [('main', bone_main), ('save', bone_save)]:
+                idx = cols[key]
+                if row_len > idx:
+                    val = str(row[idx])
+                    if val and val != "None":
+                        attr.add(val)
 
-        for row in csv_data[1:]:
-            if len(row) <= max(simple_toactive_column, simple_active_column):
-                continue
-            key = str(row[simple_toactive_column])
-            value = str(row[simple_active_column])
-            if (not key) or (key == "None") or (not value) or (value == "None"):
-                continue
-            bone_mapping[key] = value
+            # 提取映射关系
+            m_idx, t_idx = cols['active'], cols['to_active']
+            if row_len > max(m_idx, t_idx):
+                key_bone, val_bone = str(row[t_idx]), str(row[m_idx])
+                if all([key_bone, val_bone, key_bone != "None", val_bone != "None"]):
+                    bone_mapping[key_bone] = val_bone
 
+        # 4. 骨骼集合处理函数 (提高代码重用性)
+        def assign_bones_to_collection(armature, bone_names, coll_name, palette):
+            if not bone_names: return
+            coll = armature.data.collections.get(coll_name) or armature.data.collections.new(coll_name)
+            for name in bone_names:
+                p_bone = armature.pose.bones.get(name)
+                if p_bone:
+                    coll.assign(p_bone.bone)
+                    p_bone.bone.color.palette = palette
+
+        # 进入姿态模式
         bpy.ops.object.mode_set(mode='OBJECT')
-        bpy.context.view_layer.objects.active = SourceArmature
+        context.view_layer.objects.active = target_obj
         bpy.ops.object.mode_set(mode='POSE')
-        bpy.ops.pose.reveal() # 全部取消隐藏
+        bpy.ops.pose.reveal()
 
-        # 创建主骨骼集合
-        bpy.ops.pose.select_all(action='DESELECT')
-        for bone_name in bone_main:
-            bone = SourceArmature.pose.bones.get(bone_name)
-            if bone:
-                bone.bone.select = True
-        
-        main_collection = SourceArmature.data.collections.get("主骨骼")
-        if not main_collection:
-            main_collection = SourceArmature.data.collections.new("主骨骼")
-        
-        for bone in SourceArmature.data.bones:
-            if bone.select:
-                main_collection.assign(bone)
-                bone.color.palette = 'THEME02'
+        # 5. 分配集合与颜色 (优化点：减少模式切换，批量处理)
+        assign_bones_to_collection(target_obj, bone_main, "主骨骼", 'THEME02')
+        assign_bones_to_collection(target_obj, bone_save, "保留骨骼", 'THEME09')
 
-        # 创建保留骨骼集合
-        bpy.ops.pose.select_all(action='DESELECT')
-        for bone_name in bone_save:
-            bone = SourceArmature.pose.bones.get(bone_name)
-            if bone:
-                bone.bone.select = True
+        # 6. 执行特定合并 (保持原有逻辑，但优化选择操作)
+        # 注意：此处仍需调用你自定义的 merge_to_active 算子
+        for to_active, active in bone_mapping.items():
+            if to_active in target_obj.pose.bones and active in target_obj.pose.bones:
+                bpy.ops.pose.select_all(action='DESELECT')
+                target_obj.data.bones[to_active].select = True
+                target_obj.data.bones.active = target_obj.data.bones[active]
+                bpy.ops.xbone.merge_to_active()
 
-        save_collection = SourceArmature.data.collections.get("保留骨骼")
-        if not save_collection:
-            save_collection = SourceArmature.data.collections.new("保留骨骼")
-        
-        for bone in SourceArmature.data.bones:
-            if bone.select:
-                save_collection.assign(bone)
-                bone.color.palette = 'THEME09'
+        # 7. 剩余骨骼合并至父级
+        # 优化点：使用集合运算快速找出需要处理的骨骼
+        all_pose_bones = set(target_obj.pose.bones.keys())
+        keep_bones = bone_main.union(bone_save)
+        bones_to_parent = all_pose_bones - keep_bones
 
-        # 执行特定合并
-        for simple_toactive_name, simple_active_name in bone_mapping.items():
+        if bones_to_parent:
             bpy.ops.pose.select_all(action='DESELECT')
-            bpy.ops.object.select_pattern(pattern=simple_toactive_name)
-            SourceArmature.data.bones.active = SourceArmature.data.bones[simple_active_name]
-            bpy.ops.xbone.merge_to_active()
+            for b_name in bones_to_parent:
+                if b_name in target_obj.data.bones:
+                    target_obj.data.bones[b_name].select = True
+            
+            # 调用自定义合并至父级算子
+            bpy.ops.xbone.merge_to_parent()
+            
+            # 8. 删除骨骼
+            bpy.ops.object.mode_set(mode='EDIT')
+            # 此时选中的依然是 bones_to_parent
+            bpy.ops.armature.delete()
+            bpy.ops.object.mode_set(mode='POSE')
 
-        # 剩余合并至父级
-        bpy.ops.pose.select_all(action='DESELECT')
-        for bone in bone_main:
-            bpy.ops.object.select_pattern(pattern=bone)
-        for bone in bone_save:
-            bpy.ops.object.select_pattern(pattern=bone)
-        bpy.ops.pose.select_all(action='INVERT') # 反选
-        bpy.ops.xbone.merge_to_parent()
-        #删除剩余骨骼
-        bpy.ops.object.mode_set(mode='EDIT')
-        bpy.ops.armature.delete()
-        bpy.ops.object.mode_set(mode='POSE')
-        #全选并取消约束
+        # 9. 清理工作
         bpy.ops.pose.select_all(action='SELECT')
         bpy.ops.pose.constraints_clear()
-
-        return {'FINISHED'}
         
+        self.report({'INFO'}, "简化骨骼操作完成")
+        return {'FINISHED'}  
 
 class O_BonePosMapping(bpy.types.Operator):
     bl_idname = "xbone.pos_mapping"

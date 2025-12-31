@@ -8,38 +8,29 @@ class DATA_PT_vertex_group_tools(bpy.types.Panel):
     bl_label = "顶点组"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = 'XBone'
+    bl_category = 'XQFA'
 
     @classmethod
     def poll(cls, context):
         # 只有当主面板激活了此子面板时才显示
-        return getattr(context.scene, 'active_xbone_subpanel', '') == 'AttributeTools'
+        return (getattr(context.scene, 'active_xbone_subpanel', '') == 'AttributeTools' and context.object is not None)
 
     def draw(self, context):
         layout = self.layout
 
-        obj = context.object
-        # 添加安全检查，确保物体存在且是网格物体
-        if obj is None or obj.type != 'MESH':
-            layout.label(text="请选择一个网格物体")
-            return
-        count0 = len(obj.vertex_groups)
-        
         # 获取存储的统计信息，如果没有则显示默认值
-        stats = obj.get("vertex_group_stats", {
-            "total": count0,
+        stats = context.object.get("vertex_group_stats", {
+            "total": "N/A",
             "with_weight": "N/A",
             "zero_weight": "N/A"
         })
         
         col = layout.column(align=True)
         row = col.row(align=True)
-        row.label(text=f"数量: {stats['total']}")
-        row.label(text=f"有权重: {stats['with_weight']}")
-        row.label(text=f"无权重: {stats['zero_weight']}")
+        row.operator(O_VertexGroupsCount.bl_idname, text=f"统计：{stats['total']} | {stats['with_weight']} | {stats['zero_weight']}", icon="GROUP_VERTEX")
+
 
         row = col.row(align=True)
-        row.operator(O_VertexGroupsCount.bl_idname, text=O_VertexGroupsCount.bl_label, icon="GROUP_VERTEX")
         row.operator(O_VertexGroupsDelNoneActive.bl_idname, text=O_VertexGroupsDelNoneActive.bl_label, icon="GROUP_VERTEX")
 
         row = col.row(align=True)
@@ -50,8 +41,8 @@ class DATA_PT_vertex_group_tools(bpy.types.Panel):
 
 
 class O_VertexGroupsCount(bpy.types.Operator):
-    bl_idname = "xbone.vertex_groups_count"
-    bl_label = "统计有无权重数量"
+    bl_idname = "xqfa.vertex_groups_count"
+    bl_label = "计算"
     bl_description = "统计活动物体顶点组中有权重和无权重的数量"
     
     def execute(self, context):
@@ -97,7 +88,7 @@ class O_VertexGroupsCount(bpy.types.Operator):
 
 
 class O_VertexGroupsDelNoneActive(bpy.types.Operator):
-    bl_idname = "xbone.vertex_groups_del_none_active"
+    bl_idname = "xqfa.vertex_groups_del_none_active"
     bl_label = "删除无权重顶点组"
     bl_description = "删除活动物体中没有顶点权重的顶点组"
     
@@ -147,7 +138,7 @@ class O_VertexGroupsDelNoneActive(bpy.types.Operator):
 # 3. 匹配重命名操作 (Match Rename Operator) - 💥 优化
 # ----------------------------------------------------------------
 class O_VertexGroupsMatchRename(bpy.types.Operator):
-    bl_idname = "xbone.vertex_groups_match_rename"
+    bl_idname = "xqfa.vertex_groups_match_rename"
     bl_label = "匹配重命名"
     bl_description = ("基于顶点平均位置匹配重命名活动物体的顶点组（需选择2个网格物体）\n"
                      "我用来给鸣潮提取的模型按解包的模型骨骼重命名，这样顶点组有名称意义也可以操控")
@@ -424,7 +415,7 @@ class O_VertexGroupsMatchRename(bpy.types.Operator):
 # 4. 名称排序操作 (Sort Match Operator) - 💥 优化并增加反馈
 # ----------------------------------------------------------------
 class O_VertexGroupsSortMatch(bpy.types.Operator):
-    bl_idname = "xbone.vertex_groups_sort_match"
+    bl_idname = "xqfa.vertex_groups_sort_match"
     bl_label = "名称排序 (高效)"
     bl_description = ("严格按照选择物体的顶点组顺序重新排列活动物体的顶点组\n"
                      "使用高效算法：保存权重 -> 清空 -> 按顺序重建/恢复权重")

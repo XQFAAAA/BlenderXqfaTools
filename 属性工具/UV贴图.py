@@ -5,7 +5,7 @@ class DATA_PT_uv_map_tools(bpy.types.Panel):
     bl_label = "UV贴图"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = 'XBone'
+    bl_category = 'XQFA'
 
     @classmethod
     def poll(cls, context):
@@ -32,8 +32,8 @@ class DATA_PT_uv_map_tools(bpy.types.Panel):
 
 
 class O_AddRenameUVMaps(bpy.types.Operator):
-    bl_idname = "xbone.uv_map_add_rename"
-    bl_label = "添加并重命名"
+    bl_idname = "xqfa.uv_map_add_rename"
+    bl_label = "覆盖并重命名"
     bl_description = "添加UV贴图并重命名为TEXCOORD.xy格式"
     
     def execute(self, context):
@@ -74,7 +74,7 @@ class O_AddRenameUVMaps(bpy.types.Operator):
         return {'FINISHED'}
 
 class O_SetActiveUVMaps(bpy.types.Operator):
-    bl_idname = "xbone.uv_map_set_active"
+    bl_idname = "xqfa.uv_map_set_active"
     bl_label = "设置活动"
     bl_description = "将所有选中物体的活动UV设置为指定索引"
     
@@ -104,7 +104,7 @@ class O_SetActiveUVMaps(bpy.types.Operator):
         return {'FINISHED'}
 
 class O_SetRenderUVMaps(bpy.types.Operator):
-    bl_idname = "xbone.uv_map_set_render"
+    bl_idname = "xqfa.uv_map_set_render"
     bl_label = "设置渲染"
     bl_description = "将所有选中物体的渲染UV设置为指定索引"
     
@@ -138,7 +138,7 @@ class O_SetRenderUVMaps(bpy.types.Operator):
         return {'FINISHED'}
 
 class O_RemoveUVMaps(bpy.types.Operator):
-    bl_idname = "xbone.uv_map_remove"
+    bl_idname = "xqfa.uv_map_remove"
     bl_label = "删除"
     bl_description = "删除指定索引的UV贴图"
     

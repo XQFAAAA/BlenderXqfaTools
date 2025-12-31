@@ -147,7 +147,7 @@ class PG_BonePoseWorldProps(bpy.types.PropertyGroup):
 
 
 class O_BonePoseYUp(bpy.types.Operator):
-    bl_idname = "xbone.pose_y_up"
+    bl_idname = "xqfa.pose_y_up"
     bl_label = "90 0 0"
     bl_description = "选中骨骼Y轴向上右手坐标系, 请先应用骨架旋转"
 
@@ -183,7 +183,7 @@ class O_BonePoseYUp(bpy.types.Operator):
         return {"FINISHED"}
     
 class O_BonePoseZUp(bpy.types.Operator):
-    bl_idname = "xbone.pose_z_up"
+    bl_idname = "xqfa.pose_z_up"
     bl_label = "0 0 0"
     bl_description = "选中骨骼Z轴向上右手坐标系, 请先应用骨架旋转"
 
@@ -219,7 +219,7 @@ class O_BonePoseZUp(bpy.types.Operator):
         return {"FINISHED"}
 
 class O_BonePoseUpRight(bpy.types.Operator):
-    bl_idname = "xbone.pose_upright"
+    bl_idname = "xqfa.pose_upright"
     bl_label = "自动摆正"
     bl_description = "选择当前朝向相近的正交方向 by 夜曲"
 
@@ -263,7 +263,7 @@ class O_BonePoseUpRight(bpy.types.Operator):
         return {"FINISHED"}
 
 class O_BonePoseX90(bpy.types.Operator):
-    bl_idname = "xbone.pose_x90"
+    bl_idname = "xqfa.pose_x90"
     bl_label = "绕x旋转90°"
     bl_description = ""
 
@@ -297,7 +297,7 @@ class O_BonePoseX90(bpy.types.Operator):
         return {"FINISHED"}
 
 class O_BonePoseY90(bpy.types.Operator):
-    bl_idname = "xbone.pose_y90"
+    bl_idname = "xqfa.pose_y90"
     bl_label = "绕y旋转90°"
     bl_description = ""
     def execute(self, context):
@@ -320,7 +320,7 @@ class O_BonePoseY90(bpy.types.Operator):
         return {"FINISHED"}
     
 class O_BonePoseZ90(bpy.types.Operator):
-    bl_idname = "xbone.pose_z90"
+    bl_idname = "xqfa.pose_z90"
     bl_label = "绕z旋转90°"
     bl_description = ""
     def execute(self, context):
@@ -343,7 +343,7 @@ class O_BonePoseZ90(bpy.types.Operator):
         return {"FINISHED"}
 
 class O_BonePoseApply(bpy.types.Operator):
-    bl_idname = "xbone.pose_apply"
+    bl_idname = "xqfa.pose_apply"
     bl_label = "应用骨架和姿态"
     bl_description = ""
     def execute(self, context):
@@ -402,7 +402,7 @@ class O_BonePoseApply(bpy.types.Operator):
 
 class O_SwapPoseRest(bpy.types.Operator):
     """交换所选骨骼的姿态位置和静置位置"""
-    bl_idname = "xbone.swap_pose_and_rest"
+    bl_idname = "xqfa.swap_pose_and_rest"
     bl_label = "交换姿态和静置"
     bl_description = "将当前姿态与静置位置交换\n如果已经在静置位置，就变成静置和静置交换了\n不选中为全选"
     bl_options = {'REGISTER', 'UNDO'}  # 注册操作并支持撤销
@@ -466,7 +466,7 @@ class O_SwapPoseRest(bpy.types.Operator):
     
 
 class O_InCSVSel(bpy.types.Operator, ImportHelper):
-    bl_idname = "xbone.csv_bone_sel"
+    bl_idname = "xqfa.csv_bone_sel"
     bl_label = "导入CSV并选择骨骼"
     bl_description = ""
     filename_ext = ".csv"
@@ -523,7 +523,7 @@ class O_InCSVSel(bpy.types.Operator, ImportHelper):
         
 
 class O_BonePosePrint(bpy.types.Operator):
-    bl_idname = "xbone.pose_print"
+    bl_idname = "xqfa.pose_print"
     bl_label = "复制选中骨骼名称"
     bl_description = "打印并复制选择的骨骼名称到剪贴板"
     
@@ -571,7 +571,7 @@ class O_BonePoseMoveToActive(bpy.types.Operator):
     - 分别处理每个骨架中的骨骼移动操作
     2. 世界坐标直接移动获得骨骼的世界坐标后，直接使用 `bpy.ops.transform.translate` API 进行移动
     '''
-    bl_idname = "xbone.pose_move_to_active"
+    bl_idname = "xqfa.pose_move_to_active"
     bl_label = "移动到活动骨骼"
     bl_description = "将选中的骨骼移动到活动骨骼的位置（支持多骨架）"
     bl_options = {'REGISTER', 'UNDO'}
@@ -693,7 +693,7 @@ class O_BonePoseRotateToActive(bpy.types.Operator):
     旋转选中骨骼的父级，使选中骨骼指向活动骨骼。
     选中骨骼A，活动骨骼B，父级P。
     """
-    bl_idname = "xbone.pose_rotate_to_active"
+    bl_idname = "xqfa.pose_rotate_to_active"
     bl_label = "父级转向活动骨骼"
     bl_description = "使用阻尼追踪约束，旋转选中骨骼(A)的父级(P)，使A指向活动骨骼(B)的位置"
     bl_options = {'REGISTER', 'UNDO'}
@@ -764,7 +764,7 @@ class O_BonePoseRotateToActive(bpy.types.Operator):
         return {'FINISHED'}
 
 class O_BonePoseXYZRotateToActive(bpy.types.Operator):
-    bl_idname = "xbone.pose_xyz_rotate_to_active"
+    bl_idname = "xqfa.pose_xyz_rotate_to_active"
     bl_label = "父级特定轴向转向活动骨骼"
     bl_description = "旋转选中骨骼(A)的父级(P)，使A指向活动骨骼(B)的位置"
     bl_options = {'REGISTER', 'UNDO'}
@@ -890,7 +890,7 @@ class O_BonePoseXYZRotateToActive(bpy.types.Operator):
 
 
 class O_BonePoseXYZResizeToActive(bpy.types.Operator):
-    bl_idname = "xbone.pose_xyz_resize_to_active"
+    bl_idname = "xqfa.pose_xyz_resize_to_active"
     bl_label = "父级缩放到活动骨骼"
     bl_description = "缩放选中骨骼(A)的父级(P)，使A的位置与活动骨骼(B)的位置在选定轴向上匹配\n仅推荐在骨骼朝向正确，使用局部"
     bl_options = {'REGISTER', 'UNDO'}
@@ -1020,7 +1020,7 @@ class O_BonePoseXYZResizeToActive(bpy.types.Operator):
 
 class O_BonePoseUnlockAll(bpy.types.Operator):
     """解除所有选中骨骼的变换锁定（位置、旋转、缩放）"""
-    bl_idname = "xbone.pose_unlock_all"
+    bl_idname = "xqfa.pose_unlock_all"
     bl_label = "解除所有锁定"
     bl_description = "解除选中骨骼的位置、旋转和缩放的全部锁定"
     bl_options = {'REGISTER', 'UNDO'}
@@ -1065,7 +1065,7 @@ class O_BonePoseUnlockAll(bpy.types.Operator):
 
 class O_BonePoseRemoveAllConstraints(bpy.types.Operator):
     """去除所有选中骨骼的约束"""
-    bl_idname = "xbone.pose_remove_all_constraints"
+    bl_idname = "xqfa.pose_remove_all_constraints"
     bl_label = "去除所有约束"
     bl_description = "移除所有选中骨骼上的所有姿态约束"
     bl_options = {'REGISTER', 'UNDO'}
@@ -1099,7 +1099,7 @@ class P_BonePose(bpy.types.Panel):
     bl_label = "姿态模式"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = 'XBone'  # 这里设置自定义标签的名称
+    bl_category = 'XQFA'  # 这里设置自定义标签的名称
 
     @classmethod
     def poll(cls, context):

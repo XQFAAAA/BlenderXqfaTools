@@ -81,7 +81,7 @@ class PG_BoneEditWorldProps(bpy.types.PropertyGroup):
     ) 
 
 class O_BoneEditYUp(bpy.types.Operator):
-    bl_idname = "xbone.edit_y_up"
+    bl_idname = "xqfa.edit_y_up"
     bl_label = "90 0 0"
     bl_description = "选中骨骼Y轴向上右手坐标系, 请先应用骨架旋转"
 
@@ -107,7 +107,7 @@ class O_BoneEditYUp(bpy.types.Operator):
         return {"FINISHED"}
     
 class O_BoneEditZUp(bpy.types.Operator):
-    bl_idname = "xbone.edit_z_up"
+    bl_idname = "xqfa.edit_z_up"
     bl_label = "0 0 0"
     bl_description = "选中骨骼Y轴向上右手坐标系, 请先应用骨架旋转"
 
@@ -133,7 +133,7 @@ class O_BoneEditZUp(bpy.types.Operator):
         return {"FINISHED"}
 
 class O_BoneEditUpRight(bpy.types.Operator):
-    bl_idname = "xbone.edit_upright"
+    bl_idname = "xqfa.edit_upright"
     bl_label = "自动摆正"
     bl_description = "选择当前朝向相近的正交方向 by 夜曲"
 
@@ -169,7 +169,7 @@ class O_BoneEditUpRight(bpy.types.Operator):
         return {"FINISHED"}
 
 class O_BoneEditX90(bpy.types.Operator):
-    bl_idname = "xbone.edit_x90"
+    bl_idname = "xqfa.edit_x90"
     bl_label = "绕x旋转90°"
     bl_description = ""
 
@@ -203,7 +203,7 @@ class O_BoneEditX90(bpy.types.Operator):
         return {"FINISHED"}
 
 class O_BoneEditY90(bpy.types.Operator):
-    bl_idname = "xbone.edit_y90"
+    bl_idname = "xqfa.edit_y90"
     bl_label = "绕y旋转90°"
     bl_description = ""
 
@@ -231,7 +231,7 @@ class O_BoneEditY90(bpy.types.Operator):
         return {"FINISHED"}
 
 class O_BoneEditZ90(bpy.types.Operator):
-    bl_idname = "xbone.edit_z90"
+    bl_idname = "xqfa.edit_z90"
     bl_label = "绕z旋转90°"
     bl_description = ""
 
@@ -261,7 +261,7 @@ class O_BoneEditZ90(bpy.types.Operator):
 ########################## Divider ##########################
 
 class O_BoneConnect(bpy.types.Operator):
-    bl_idname = "xbone.connect"
+    bl_idname = "xqfa.connect"
     bl_label = "选中取消相连"
     bl_description = ""
 
@@ -276,7 +276,7 @@ class O_BoneConnect(bpy.types.Operator):
         return {"FINISHED"}
 
 class O_BoneAllConnect(bpy.types.Operator):
-    bl_idname = "xbone.all_connect"
+    bl_idname = "xqfa.all_connect"
     bl_label = "所有取消相连"
     bl_description = ""
 
@@ -300,7 +300,7 @@ class O_BoneAllConnect(bpy.types.Operator):
 ########################## Divider ##########################
 
 class O_BoneMoveTailToChild(bpy.types.Operator):
-    bl_idname = "xbone.move_tail_to_child"
+    bl_idname = "xqfa.move_tail_to_child"
     bl_label = "选中骨骼尾部-->子级平均/父级矩阵"
     bl_description = "将选中骨骼的尾部移动到其选中子级头部的平均位置；或若无子级，使用父级矩阵但不移动头部"
 
@@ -448,7 +448,7 @@ class P_BoneEdit(bpy.types.Panel):
     bl_label = "编辑模式"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = 'XBone'
+    bl_category = 'XQFA'
 
     @classmethod
     def poll(cls, context):

@@ -12,7 +12,7 @@ class ObjType(bpy.types.Operator):
         return obj.type == "ARMATURE"
 
 class O_ImportCSV(bpy.types.Operator, ImportHelper):
-    bl_idname = "xbone.csv_import"
+    bl_idname = "xqfa.csv_import"
     bl_label = "导入CSV"
     bl_description = ""
     filename_ext = ".csv"
@@ -52,7 +52,7 @@ class O_ImportCSV(bpy.types.Operator, ImportHelper):
 
 
 class O_BoneSimpleMapping(bpy.types.Operator):
-    bl_idname = "xbone.simple_mapping"
+    bl_idname = "xqfa.simple_mapping"
     bl_label = "简化骨骼"
     bl_description = "根据CSV映射表保留主骨骼、处理合并逻辑并清理多余骨骼"
 
@@ -132,7 +132,7 @@ class O_BoneSimpleMapping(bpy.types.Operator):
                 bpy.ops.pose.select_all(action='DESELECT')
                 target_obj.data.bones[to_active].select = True
                 target_obj.data.bones.active = target_obj.data.bones[active]
-                bpy.ops.xbone.merge_to_active()
+                bpy.ops.xqfa.merge_to_active()
 
         # 7. 剩余骨骼合并至父级
         # 优化点：使用集合运算快速找出需要处理的骨骼
@@ -147,7 +147,7 @@ class O_BoneSimpleMapping(bpy.types.Operator):
                     target_obj.data.bones[b_name].select = True
             
             # 调用自定义合并至父级算子
-            bpy.ops.xbone.merge_to_parent()
+            bpy.ops.xqfa.merge_to_parent()
             
             # 8. 删除骨骼
             bpy.ops.object.mode_set(mode='EDIT')
@@ -163,7 +163,7 @@ class O_BoneSimpleMapping(bpy.types.Operator):
         return {'FINISHED'}  
 
 class O_BonePosMapping(bpy.types.Operator):
-    bl_idname = "xbone.pos_mapping"
+    bl_idname = "xqfa.pos_mapping"
     bl_label = "复制位置"
     bl_description = "将源骨骼按csv对应, 添加复制位置约束并应用约束、骨架、姿态"
 
@@ -216,14 +216,14 @@ class O_BonePosMapping(bpy.types.Operator):
                 if constraint.type == "COPY_LOCATION":
                     bpy.ops.constraint.apply(constraint=constraint.name, owner='BONE')
         # 调用，应用骨架和姿态
-        bpy.ops.xbone.pose_apply()
+        bpy.ops.xqfa.pose_apply()
         bpy.ops.object.mode_set(mode='OBJECT')     
 
         return {'FINISHED'}
 
 
 class O_BoneRenameMapping(bpy.types.Operator):
-    bl_idname = "xbone.rename_mapping"
+    bl_idname = "xqfa.rename_mapping"
     bl_label = "重命名换绑"
     bl_description = "将源骨架骨骼按csv对应, 重命名至目标骨架并绑定"
 
@@ -276,11 +276,11 @@ class O_BoneRenameMapping(bpy.types.Operator):
         # 应用两个骨架姿态
         bpy.context.view_layer.objects.active = SourceArmature
         bpy.ops.object.mode_set(mode='POSE')
-        bpy.ops.xbone.pose_apply()
+        bpy.ops.xqfa.pose_apply()
         bpy.ops.object.mode_set(mode='OBJECT')
         bpy.context.view_layer.objects.active = TargetArmature
         bpy.ops.object.mode_set(mode='POSE')
-        bpy.ops.xbone.pose_apply()
+        bpy.ops.xqfa.pose_apply()
 
         # 姿态模式重命名
         bpy.ops.object.mode_set(mode='OBJECT')
@@ -437,7 +437,7 @@ class O_BoneRenameMapping(bpy.types.Operator):
         return {'FINISHED'}
     
 class O_only_BoneRenameMapping(bpy.types.Operator):
-    bl_idname = "xbone.only_rename_mapping"
+    bl_idname = "xqfa.only_rename_mapping"
     bl_label = "仅重命名"
     bl_description = "将源骨架骨骼按csv对应, 重命名"
 
@@ -482,7 +482,7 @@ class P_BoneMapping(bpy.types.Panel):
     bl_idname = "X_PT_BoneMapping"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = 'XBone'
+    bl_category = 'XQFA'
     bl_options = {'DEFAULT_CLOSED'} #默认折叠
 
     @classmethod

@@ -18,7 +18,7 @@ class P_DEMO(bpy.types.Panel):
     bl_idname = "X_PT_DEMO"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = 'XBone'
+    bl_category = 'XQFA'
 
     @classmethod
     def poll(cls, context):
@@ -55,7 +55,7 @@ class P_DEMO(bpy.types.Panel):
 
 
 class MiniPlaneOperator(bpy.types.Operator):
-    bl_idname = "xbone.mini_plane"
+    bl_idname = "xqfa.mini_plane"
     bl_label = "创建空模"
     bl_description = "创建一个极小的平面网格，并将其分配到两个顶点组中"
     bl_options = {'REGISTER', 'UNDO'}
@@ -151,7 +151,7 @@ class MiniPlaneOperator(bpy.types.Operator):
 
 
 class RenameToComponents(bpy.types.Operator):
-    bl_idname = "xbone.rename_to_components"
+    bl_idname = "xqfa.rename_to_components"
     bl_label = "重命名：C-->Components"
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -193,7 +193,7 @@ class RenameToComponents(bpy.types.Operator):
         return {'FINISHED'}
     
 class ApplyAsShapekey(bpy.types.Operator):
-    bl_idname = "xbone.apply_as_shapekey"
+    bl_idname = "xqfa.apply_as_shapekey"
     bl_label = "应用为形态键"
     bl_description = "将当前骨架的姿态应用为目标物体的形态键"
     bl_options = {'REGISTER', 'UNDO'}
@@ -257,7 +257,7 @@ class ApplyAsShapekey(bpy.types.Operator):
         return {'FINISHED'}
     
 class X_OT_NumberToBone(bpy.types.Operator):
-    bl_idname = "xbone.num_to_bone"
+    bl_idname = "xqfa.num_to_bone"
     bl_label = "数字顶点组<-->骨骼名称"
     bl_description = "自动执行：清除材质->按名分配材质->合并->匹配重命名->排序->按材质分离->添加骨架->匹配材质"
     bl_options = {'REGISTER', 'UNDO'}
@@ -300,7 +300,7 @@ class X_OT_NumberToBone(bpy.types.Operator):
         context.view_layer.objects.active = target_a
         
         try:
-            bpy.ops.xbone.vertex_groups_match_rename()
+            bpy.ops.xqfa.vertex_groups_match_rename()
         except Exception as e:
             self.report({'WARNING'}, f"匹配重命名失败: {e}")
 
@@ -313,7 +313,7 @@ class X_OT_NumberToBone(bpy.types.Operator):
         context.view_layer.objects.active = active_e
         
         try:
-            bpy.ops.xbone.vertex_groups_sort_match()
+            bpy.ops.xqfa.vertex_groups_sort_match()
         except Exception as e:
             self.report({'WARNING'}, f"排序失败: {e}")
 
@@ -419,7 +419,7 @@ class X_OT_NumberToBone(bpy.types.Operator):
     
 class NODE_OT_add_packed_image(bpy.types.Operator):
     """创建已打包图像"""
-    bl_idname = "xbone.add_packed_image"
+    bl_idname = "xqfa.add_packed_image"
     bl_label = "创建已打包图像"
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -500,7 +500,7 @@ class NODE_PT_add_packed_image(bpy.types.Panel):
     bl_label = "图像"
     bl_space_type = 'NODE_EDITOR'
     bl_region_type = 'UI'
-    bl_category = "XBone"
+    bl_category = "XQFA"
     
     def draw(self, context):
         layout = self.layout
@@ -508,7 +508,7 @@ class NODE_PT_add_packed_image(bpy.types.Panel):
 
 
 class NODE_OT_add_material(bpy.types.Operator):
-    bl_idname = "xbone.add_material"
+    bl_idname = "xqfa.add_material"
     bl_label = "新建3贴图材质"
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -724,7 +724,7 @@ def calc_smooth_normals(mesh):
 
 class TANGENTSPACE_OCTAHEDRAL_UV_OT_operator(bpy.types.Operator):
     """生成切线空间的八面体UV映射"""
-    bl_idname = "xbone.octahedral_uv"
+    bl_idname = "xqfa.octahedral_uv"
     bl_label = "平滑法线-八面体UV"
     bl_description = ("对所有选中物体\n"
     "平滑法线在切线空间的坐标，投射八面体展开平面\n"

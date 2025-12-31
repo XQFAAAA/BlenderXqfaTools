@@ -6,7 +6,7 @@ class MAIN_PT_XBonePanel(bpy.types.Panel):
     bl_label = "XQFA 工具集"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = 'XBone'
+    bl_category = 'XQFA'
 
     def draw(self, context):
         layout = self.layout
@@ -24,7 +24,7 @@ class MAIN_PT_XBonePanel(bpy.types.Panel):
 
 class XBONE_OT_switch_subpanel(bpy.types.Operator):
     """切换子面板"""
-    bl_idname = "xbone.switch_subpanel"
+    bl_idname = "xqfa.switch_subpanel"
     bl_label = "切换子面板"
     
     subpanel_type: bpy.props.StringProperty(

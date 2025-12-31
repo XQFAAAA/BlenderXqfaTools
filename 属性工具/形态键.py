@@ -8,7 +8,7 @@ class DATA_PT_shape_key_tools(bpy.types.Panel):
     bl_label = "形态键"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = 'XBone'
+    bl_category = 'XQFA'
 
     @classmethod
     def poll(cls, context):
@@ -26,7 +26,7 @@ class DATA_PT_shape_key_tools(bpy.types.Panel):
         row.operator(O_ShapeKeysRenameByOrder.bl_idname, text=O_ShapeKeysRenameByOrder.bl_label, icon="SORTALPHA")
 
 class O_ShapeKeysMatchRename(bpy.types.Operator):
-    bl_idname = "xbone.shape_keys_match_rename"
+    bl_idname = "xqfa.shape_keys_match_rename"
     bl_label = "匹配重命名"
     bl_description = ("基于顶点平均位置匹配重命名活动物体的形态键（需选择2个网格物体）\n"
                      "用于按参考模型的形态键名称重命名当前模型的形态键")
@@ -201,7 +201,7 @@ class O_ShapeKeysMatchRename(bpy.types.Operator):
         print(separator)
 
 class O_ShapeKeysSortMatch(bpy.types.Operator):
-    bl_idname = "xbone.shape_keys_sort_match"
+    bl_idname = "xqfa.shape_keys_sort_match"
     bl_label = "按名称排序"
     bl_description = ("严格按照选择物体的形态键名称顺序重新排列活动物体的形态键\n"
                     "操作逻辑:\n"
@@ -336,7 +336,7 @@ class O_ShapeKeysSortMatch(bpy.types.Operator):
         }
     
 class O_ShapeKeysRenameByOrder(bpy.types.Operator):
-    bl_idname = "xbone.shape_keys_rename_by_order"
+    bl_idname = "xqfa.shape_keys_rename_by_order"
     bl_label = "顺序重命名"
     bl_description = ("按照选择物体A的形态键顺序重命名活动物体B的形态键名称\n"
                      "操作逻辑:\n"

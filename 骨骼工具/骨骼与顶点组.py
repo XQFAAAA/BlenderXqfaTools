@@ -12,7 +12,7 @@ class ObjType(bpy.types.Operator):
         return obj.type == "ARMATURE"
 
 class O_VertexGroupsDelAll(bpy.types.Operator):
-    bl_idname = "xbone.vertex_groups_del_all_more"
+    bl_idname = "xqfa.vertex_groups_del_all_more"
     bl_label = "删除所有顶点组"
     bl_description = "删除选择的多个物体的所有顶点组"
     
@@ -36,7 +36,7 @@ class O_VertexGroupsDelAll(bpy.types.Operator):
         return {'FINISHED'}
 
 class O_VertexGroupsDelNone(bpy.types.Operator):
-    bl_idname = "xbone.vertex_groups_del_none_more"
+    bl_idname = "xqfa.vertex_groups_del_none_more"
     bl_label = "删除无权重顶点组"
     bl_description = "删除选择的多个物体中没有顶点权重的顶点组"
     
@@ -88,7 +88,7 @@ class O_VertexGroupsDelNone(bpy.types.Operator):
 ########################## Divider ##########################
 
 class O_NoVgDelBone(bpy.types.Operator):
-    bl_idname = "xbone.vertex_groups_no_vg_del_bone"
+    bl_idname = "xqfa.vertex_groups_no_vg_del_bone"
     bl_label = "删除无对应顶点组的骨骼"
     bl_description = "删除选择的骨骼中无对应顶点组的骨骼"
 
@@ -126,7 +126,7 @@ class O_NoVgDelBone(bpy.types.Operator):
         return {'FINISHED'}
 
 class O_NoBoneDelVg(bpy.types.Operator):
-    bl_idname = "xbone.vertex_groups_no_bone_del_vg"
+    bl_idname = "xqfa.vertex_groups_no_bone_del_vg"
     bl_label = "删除无对应骨骼的顶点组"
     bl_description = "删除顶点组中无对应骨骼的顶点组"
     
@@ -156,7 +156,7 @@ class O_NoBoneDelVg(bpy.types.Operator):
 ########################## Divider ##########################
 
 class O_AddBoneNumber(bpy.types.Operator):
-    bl_idname = "xbone.vertex_groups_add_bone_number"
+    bl_idname = "xqfa.vertex_groups_add_bone_number"
     bl_label = "添加骨骼编号"
     bl_description = "对有权重骨添加骨骼编号"
     
@@ -203,7 +203,7 @@ class O_AddBoneNumber(bpy.types.Operator):
         return {'FINISHED'}
     
 class O_RemoveBoneNumber(bpy.types.Operator):
-    bl_idname = "xbone.vertex_groups_remove_bone_number"
+    bl_idname = "xqfa.vertex_groups_remove_bone_number"
     bl_label = "移除骨骼编号"
     bl_description = ""
     
@@ -278,7 +278,7 @@ def merge_vertex_groups(obj, source_bone, target_bone):
 
 class BONE_OT_merge_to_parent(bpy.types.Operator):
     """将选择的骨骼合并到它们的父级骨骼"""
-    bl_idname = "xbone.merge_to_parent"
+    bl_idname = "xqfa.merge_to_parent"
     bl_label = "将选择骨骼合并到父级"
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -340,7 +340,7 @@ class BONE_OT_merge_to_parent(bpy.types.Operator):
 
 class BONE_OT_merge_to_active(bpy.types.Operator):
     """将选择的骨骼合并到活动骨骼"""
-    bl_idname = "xbone.merge_to_active"
+    bl_idname = "xqfa.merge_to_active"
     bl_label = "将选择骨骼合并到活动骨骼"
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -413,7 +413,7 @@ class P_VertexGroups(bpy.types.Panel):
     bl_label = "骨骼与顶点组"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = 'XBone'
+    bl_category = 'XQFA'
 
     @classmethod
     def poll(cls, context):

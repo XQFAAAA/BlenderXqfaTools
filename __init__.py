@@ -14,7 +14,7 @@ bl_info = {
 from . import panel
 from .骨骼工具 import 骨骼与顶点组, 骨骼姿态操作, 骨骼编辑操作, MOD骨架替换
 from .属性工具 import 顶点组, 形态键, UV贴图, 顶点色
-from .其他工具 import 其他, 烘焙节点组
+from .其他工具 import 其他, 材质, 烘焙节点组
 
 
 
@@ -30,6 +30,7 @@ def register():
     UV贴图.register()
     顶点色.register()
     其他.register()
+    材质.register()
     烘焙节点组.register()
 
 # 注销插件
@@ -44,6 +45,7 @@ def unregister():
     UV贴图.unregister()
     顶点色.unregister()
     其他.unregister()
+    材质.unregister()
     烘焙节点组.unregister()
 
 

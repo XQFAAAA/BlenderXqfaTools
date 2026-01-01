@@ -33,15 +33,39 @@ class BatchBakeProperties(bpy.types.PropertyGroup):
                 item = self.output_items.add()
                 item.name = output.name
                 item.selected = False
+    
+    def validate_resolution(self, context):
+        # 确保分辨率是正整数
+        try:
+            res = int(self.bake_resolution)
+            if res <= 0:
+                self.bake_resolution = "2048"
+        except ValueError:
+            self.bake_resolution = "2048"
 
     target_group: bpy.props.EnumProperty(name="节点组", items=get_group_items, update=update_outputs)
     output_items: bpy.props.CollectionProperty(type=MultiOutputItem)
-    bake_resolution: bpy.props.EnumProperty(
+    # 改为字符串属性，允许自定义输入
+    bake_resolution: bpy.props.StringProperty(
         name="分辨率",
-        items=[('1024', '1024', ''), ('2048', '2048', ''), ('4096', '4096', '')],
-        default='1024'
+        default="2048",
+        description="输入分辨率，例如：1024, 2048, 4096",
+        update=validate_resolution
     )
     export_path: bpy.props.StringProperty(name="保存路径", default="//", subtype='DIR_PATH')
+
+# --- 快速设置分辨率的操作算子 ---
+class M_OT_SetBakeResolution(bpy.types.Operator):
+    bl_idname = "scene.set_bake_resolution"
+    bl_label = "设置烘焙分辨率"
+    bl_description = "快速设置烘焙分辨率"
+    
+    resolution: bpy.props.StringProperty()
+    
+    def execute(self, context):
+        props = context.scene.batch_bake_props
+        props.bake_resolution = self.resolution
+        return {'FINISHED'}
 
 # --- 3. 模态烘焙操作算子 ---
 class M_OT_BatchBakeModal(bpy.types.Operator):
@@ -89,7 +113,14 @@ class M_OT_BatchBakeModal(bpy.types.Operator):
             links.new(source_socket, surface_input)
 
             # 2. 图像准备
-            res = int(props.bake_resolution)
+            # 转换分辨率，确保是整数
+            try:
+                res = int(props.bake_resolution)
+                if res <= 0:
+                    res = 2048
+            except ValueError:
+                res = 2048
+                
             img_name = f"Bake_{group_node.node_tree.name}_{item_name}"
             image = bpy.data.images.get(img_name) or bpy.data.images.new(img_name, width=res, height=res)
             image.scale(res, res)
@@ -177,7 +208,7 @@ class M_OT_BatchBakeModal(bpy.types.Operator):
 
 # --- 4. UI 面板 ---
 class M_PT_BatchBakePanel(bpy.types.Panel):
-    bl_label = "异步批量烘焙"
+    bl_label = "烘焙节点组"
     bl_idname = "M_PT_batch_bake_panel"
     bl_space_type = 'NODE_EDITOR'
     bl_region_type = 'UI'
@@ -192,23 +223,35 @@ class M_PT_BatchBakePanel(bpy.types.Panel):
         box.prop(props, "target_group", text="")
         
         box = layout.box()
-        box.label(text="2. 选择要烘焙的端口:", icon='OUTPUT')
+        box.label(text="2. 选择要烘焙的组输出:", icon='OUTPUT')
         col = box.column(align=True)
         for item in props.output_items:
             col.prop(item, "selected", text=item.name)
             
         box = layout.box()
-        box.prop(props, "bake_resolution")
-        box.prop(props, "export_path", text="")
+        box.label(text="3. 纹理设置:", icon='IMAGE_RGB_ALPHA')
+        
+        # 分辨率设置行，左侧为输入框，右侧为按钮组
+        row = box.row(align=True)
+        row.label(text="分辨率:")
+        row.prop(props, "bake_resolution", text="")
+        
+        # 快速设置按钮
+        row.operator("scene.set_bake_resolution", text="1k").resolution = "1024"
+        row.operator("scene.set_bake_resolution", text="2k").resolution = "2048"
+        row.operator("scene.set_bake_resolution", text="4k").resolution = "4096"
+        
+        box.prop(props, "export_path", text="保存路径")
         
         layout.separator()
         # 调用新的模态算子
-        layout.operator("object.batch_bake_modal", icon='RENDER_STILL', text="启动动态烘焙")
+        layout.operator("object.batch_bake_modal", icon='RENDER_STILL', text="开始烘焙")
 
 # --- 注册 ---
 def register():
     bpy.utils.register_class(MultiOutputItem)
     bpy.utils.register_class(BatchBakeProperties)
+    bpy.utils.register_class(M_OT_SetBakeResolution)
     bpy.utils.register_class(M_OT_BatchBakeModal)
     bpy.utils.register_class(M_PT_BatchBakePanel)
     bpy.types.Scene.batch_bake_props = bpy.props.PointerProperty(type=BatchBakeProperties)
@@ -217,6 +260,7 @@ def unregister():
     del bpy.types.Scene.batch_bake_props
     bpy.utils.unregister_class(M_PT_BatchBakePanel)
     bpy.utils.unregister_class(M_OT_BatchBakeModal)
+    bpy.utils.unregister_class(M_OT_SetBakeResolution)
     bpy.utils.unregister_class(BatchBakeProperties)
     bpy.utils.unregister_class(MultiOutputItem)
 

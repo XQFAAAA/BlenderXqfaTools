@@ -4,9 +4,9 @@ from bpy.props import IntProperty
 import numpy as np
 
 class NODE_OT_detect_normal_format(bpy.types.Operator):
-    """通过多区域采样分析法线格式"""
+    """基于 Sobel 算子和全图向量化运算的法线格式诊断"""
     bl_idname = "xqfa.detect_normal_format"
-    bl_label = "多区域采样分析"
+    bl_label = "深度法线分析 (Sobel)"
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
@@ -16,62 +16,68 @@ class NODE_OT_detect_normal_format(bpy.types.Operator):
             return {'CANCELLED'}
 
         img = node.image
-        width, height = img.size
+        w, h = img.size
         
-        # 1. 快速读取像素数据
-        pixels = np.empty(width * height * img.channels, dtype=np.float32)
+        # 1. 快速读取并重构数据
+        pixels = np.empty(w * h * img.channels, dtype=np.float32)
         img.pixels.foreach_get(pixels)
-        pixels = pixels.reshape((height, width, img.channels))
+        # 仅提取 R(0) 和 G(1) 通道，重映射到 [-1, 1]
+        img_data = pixels.reshape((h, w, img.channels))
+        R = img_data[:, :, 0] * 2.0 - 1.0
+        G = img_data[:, :, 1] * 2.0 - 1.0
 
-        # 2. 定义采样参数
-        grid_size = 4        # 4x4 网格采样
-        patch_size = 64      # 每个采样块的大小 (64x64像素)
-        total_correlation = 0.0
-        valid_patches = 0
+        # 2. 定义 Sobel 算子进行梯度提取
+        # dx_kernel 捕捉水平边缘，dy_kernel 捕捉垂直边缘
+        def sobel_v(a):
+            """向量化 Sobel 计算"""
+            # 计算 R 通道在 X 方向的梯度 (Horizontal)
+            # 结果 (H-2, W-2)
+            dx = (a[0:-2, 2:] + 2*a[1:-1, 2:] + a[2:, 2:]) - \
+                 (a[0:-2, 0:-2] + 2*a[1:-1, 0:-2] + a[2:, 0:-2])
+            # 计算 G 通道在 Y 方向的梯度 (Vertical)
+            dy = (a[2:, 0:-2] + 2*a[2:, 1:-1] + a[2:, 2:]) - \
+                 (a[0:-2, 0:-2] + 2*a[0:-2, 1:-1] + a[0:-2, 2:])
+            return dx, dy
 
-        # 计算采样点坐标
-        y_coords = np.linspace(patch_size, height - patch_size, grid_size, dtype=int)
-        x_coords = np.linspace(patch_size, width - patch_size, grid_size, dtype=int)
+        # 3. 执行核心分析
+        # 我们关注 R 通道的 X 变化与 G 通道的 Y 变化之间的相关性
+        dR_dx, _ = sobel_v(R)
+        _, dG_dy = sobel_v(G)
 
-        # 3. 循环分析每个采样区域
-        for y in y_coords:
-            for x in x_coords:
-                # 提取采样块 (R 和 G 通道)
-                patch_r = pixels[y : y + patch_size, x : x + patch_size, 0]
-                patch_g = pixels[y : y + patch_size, x : x + patch_size, 1]
+        # 核心逻辑：在 OpenGL 中，R+ 对应向右，G+ 对应向上。
+        # 当表面凸起时，dR/dx 与 dG/dy 的乘积在特定光照模型下具有统计学特征。
+        # 这里的判定逻辑基于切线空间坐标系的数学一致性。
+        score_map = dR_dx * dG_dy
+        
+        # 过滤掉变化极小的平坦区域 (阈值控制)
+        threshold = 0.01
+        valid_mask = np.abs(score_map) > threshold
+        valid_scores = score_map[valid_mask]
 
-                # 计算梯度
-                # dr_dx: (patch_size, patch_size-1) -> 裁切为 (patch_size-1, patch_size-1)
-                dr_dx = np.diff(patch_r, axis=1)[:-1, :]
-                # dg_dy: (patch_size-1, patch_size) -> 裁切为 (patch_size-1, patch_size-1)
-                dg_dy = np.diff(patch_g, axis=0)[:, :-1]
-
-                # 计算该区域相关性
-                patch_corr = np.sum(dr_dx * dg_dy)
-                
-                # 过滤掉几乎没有起伏的平整区域（设置一个极小的阈值）
-                if abs(patch_corr) > 0.0001:
-                    total_correlation += patch_corr
-                    valid_patches += 1
-
-        # 4. 判定结果
-        if valid_patches == 0:
-            self.report({'WARNING'}, "所有采样区域均无明显起伏，请检查贴图是否有效")
+        if valid_scores.size == 0:
+            self.report({'WARNING'}, "分析失败：贴图过于平滑，无法提取特征")
             return {'FINISHED'}
 
-        # 最终得分平均化
-        final_score = total_correlation / valid_patches
+        # 4. 判定结果
+        final_score = np.sum(valid_scores)
         
+        # 根据统计概率，OpenGL 格式在 Blender 采样下通常呈现正相关性
         if final_score > 0:
-            result = "OpenGL (Y+)"
-            detail = "特征：R与G梯度正相关（颜色按顺时针分布）"
+            res_str = "OpenGL (Y+)"
+            confidence = (np.sum(valid_scores > 0) / valid_scores.size) * 100
         else:
-            result = "DirectX (Y-)"
-            detail = "特征：R与G梯度负相关（颜色按逆时针分布）"
+            res_str = "DirectX (Y-)"
+            confidence = (np.sum(valid_scores < 0) / valid_scores.size) * 100
 
-        self.report({'INFO'}, f"分析完成({valid_patches}采样点)：判定为 {result}")
-        print(f"XQFA Debug - 采样点: {valid_patches}, 平均得分: {final_score:.8f}, 说明: {detail}")
-
+        # 5. 输出报告
+        msg = f"判定结果: {res_str} | 置信度: {confidence:.1f}% | 有效像素占比: {(valid_scores.size / score_map.size)*100:.1f}%"
+        self.report({'INFO'}, msg)
+        
+        print(f"--- Sobel 法线分析报告 ---")
+        print(f"Score Sum: {final_score:.4f}")
+        print(f"Valid Pixels: {valid_scores.size}")
+        print(f"Format: {res_str}")
+        
         return {'FINISHED'}
 
 class NODE_OT_add_packed_image(bpy.types.Operator):

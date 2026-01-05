@@ -25,10 +25,10 @@ class DATA_PT_uv_map_tools(bpy.types.Panel):
                     icon="ADD")
         
         row = col.row(align=True)
-        row.prop(scene, "uv_map_target_index", text="索引")
-        row.operator(O_SetActiveUVMaps.bl_idname, text=O_SetActiveUVMaps.bl_label, icon="RESTRICT_SELECT_OFF")
-        row.operator(O_SetRenderUVMaps.bl_idname, text=O_SetRenderUVMaps.bl_label, icon="RESTRICT_RENDER_OFF")
-        row.operator(O_RemoveUVMaps.bl_idname, text=O_RemoveUVMaps.bl_label, icon="TRASH")
+        row.prop(scene, "uv_map_target_index", text="")
+        row.operator(O_SetActiveUVMaps.bl_idname, icon="RESTRICT_SELECT_OFF")
+        row.operator(O_SetRenderUVMaps.bl_idname, icon="RESTRICT_RENDER_OFF")
+        row.operator(O_RemoveUVMaps.bl_idname, icon="TRASH")
 
 
 class O_AddRenameUVMaps(bpy.types.Operator):
@@ -75,7 +75,7 @@ class O_AddRenameUVMaps(bpy.types.Operator):
 
 class O_SetActiveUVMaps(bpy.types.Operator):
     bl_idname = "xqfa.uv_map_set_active"
-    bl_label = "设置活动"
+    bl_label = "活动"
     bl_description = "将所有选中物体的活动UV设置为指定索引"
     
     def execute(self, context):
@@ -105,7 +105,7 @@ class O_SetActiveUVMaps(bpy.types.Operator):
 
 class O_SetRenderUVMaps(bpy.types.Operator):
     bl_idname = "xqfa.uv_map_set_render"
-    bl_label = "设置渲染"
+    bl_label = "渲染"
     bl_description = "将所有选中物体的渲染UV设置为指定索引"
     
     def execute(self, context):

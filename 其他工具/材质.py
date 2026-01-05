@@ -199,15 +199,9 @@ class NODE_PT_xqfa_tools(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         
-        box = layout.box()
-        box.label(text="创建工具", icon='ADD')
-        col = box.column(align=True)
+        col = layout.column()
         col.operator(NODE_OT_add_packed_image.bl_idname, icon='IMAGE_DATA')
         col.operator(NODE_OT_add_material.bl_idname, icon='MATERIAL')
-
-        box = layout.box()
-        box.label(text="诊断工具", icon='INFO')
-        col = box.column()
         col.operator(NODE_OT_detect_normal_format.bl_idname, icon='NODE_SEL')
 
 

@@ -27,15 +27,14 @@ class P_DEMO(bpy.types.Panel):
     
     def draw(self, context):
         layout = self.layout
-        col = layout.column(align=True)
+        col = layout.column()
         col.operator(X_OT_NumberToBone.bl_idname, icon="ARROW_LEFTRIGHT")
         col.operator(MiniPlaneOperator.bl_idname, icon="MESH_CUBE")
         col.operator(RenameToComponents.bl_idname, icon="OUTLINER_OB_EMPTY")
         col.operator(TANGENTSPACE_OCTAHEDRAL_UV_OT_operator.bl_idname, icon='UV')
 
-        box = layout.box()
-        col = box.column(align=True)
-        col.prop(context.scene, "sk_source_mesh", text = "", icon="MESH_DATA")
+        row = col.row(align=True)
+        row.prop(context.scene, "sk_source_mesh", text = "", icon="MESH_DATA")
         if context.scene.sk_source_mesh:
             armature_mod = None
             armature_modifiers = [mod for mod in context.scene.sk_source_mesh.modifiers if mod.type == 'ARMATURE']
@@ -43,12 +42,12 @@ class P_DEMO(bpy.types.Panel):
             if armature_modifiers:
                 if len(armature_modifiers) == 1:
                     armature_mod = armature_modifiers[0]
-                    col.label(text=f"骨架: {armature_mod.object.name if armature_mod.object else '无'}", icon='ARMATURE_DATA')
+                    row.label(text=f"骨架: {armature_mod.object.name if armature_mod.object else '无'}", icon='ARMATURE_DATA')
                 else:
-                    col.label(text="错误: 物体有多个骨架修改器", icon='ERROR')
+                    row.label(text="错误: 物体有多个骨架修改器", icon='ERROR')
             else:
-                col.label(text="错误: 物体没有骨架修改器", icon='ERROR')
-        col.operator(ApplyAsShapekey.bl_idname, icon="SHAPEKEY_DATA")
+                row.label(text="错误: 物体没有骨架修改器", icon='ERROR')
+        row.operator(ApplyAsShapekey.bl_idname, icon="SHAPEKEY_DATA")
 
         
 

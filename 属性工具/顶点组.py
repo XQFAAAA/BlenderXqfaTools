@@ -33,10 +33,11 @@ class DATA_PT_vertex_group_tools(bpy.types.Panel):
         row = col.row(align=True)
         row.operator(O_VertexGroupsDelNoneActive.bl_idname, text=O_VertexGroupsDelNoneActive.bl_label, icon="GROUP_VERTEX")
 
+        col = layout.column(align=True)
         row = col.row(align=True)
         row.prop(context.scene, "similarity_threshold")
         row.operator(O_VertexGroupsMatchRename.bl_idname, text=O_VertexGroupsMatchRename.bl_label, icon="SORTBYEXT")
-        row.separator()  # 添加分割线
+        row = col.row(align=True)
         row.operator(O_VertexGroupsSortMatch.bl_idname, text=O_VertexGroupsSortMatch.bl_label, icon="SORTSIZE")
 
 
@@ -416,7 +417,7 @@ class O_VertexGroupsMatchRename(bpy.types.Operator):
 # ----------------------------------------------------------------
 class O_VertexGroupsSortMatch(bpy.types.Operator):
     bl_idname = "xqfa.vertex_groups_sort_match"
-    bl_label = "名称排序 (高效)"
+    bl_label = "按名称排序"
     bl_description = ("严格按照选择物体的顶点组顺序重新排列活动物体的顶点组\n"
                      "使用高效算法：保存权重 -> 清空 -> 按顺序重建/恢复权重")
 

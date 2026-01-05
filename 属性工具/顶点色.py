@@ -46,10 +46,10 @@ class DATA_PT_color_attribute_tools(bpy.types.Panel):
         
         # 添加顶点色层操作按钮
         row = col.row(align=True)
-        row.prop(scene, "color_attr_target_index", text="索引")
-        row.operator(O_SetActiveColorAttributes.bl_idname, text=O_SetActiveColorAttributes.bl_label, icon="RESTRICT_SELECT_OFF")
-        row.operator(O_SetRenderColorAttributes.bl_idname, text=O_SetRenderColorAttributes.bl_label, icon="RESTRICT_RENDER_OFF")
-        row.operator(O_RemoveColorAttributes.bl_idname, text=O_RemoveColorAttributes.bl_label, icon="TRASH")
+        row.prop(scene, "color_attr_target_index", text="")
+        row.operator(O_SetActiveColorAttributes.bl_idname, icon="RESTRICT_SELECT_OFF")
+        row.operator(O_SetRenderColorAttributes.bl_idname, icon="RESTRICT_RENDER_OFF")
+        row.operator(O_RemoveColorAttributes.bl_idname, icon="TRASH")
         
 
         # 添加颜色按钮
@@ -124,7 +124,7 @@ class O_AddRenameColorAttributes(bpy.types.Operator):
 
 class O_SetActiveColorAttributes(bpy.types.Operator):
     bl_idname = "xqfa.color_attr_set_active"
-    bl_label = "设置活动"
+    bl_label = "活动"
     bl_description = "将所有选中物体的活动顶点色层设置为指定索引"
     
     def execute(self, context):
@@ -155,7 +155,7 @@ class O_SetActiveColorAttributes(bpy.types.Operator):
 
 class O_SetRenderColorAttributes(bpy.types.Operator):
     bl_idname = "xqfa.color_attr_set_render"
-    bl_label = "设置渲染"
+    bl_label = "渲染"
     bl_description = "将所有选中物体的渲染顶点色层设置为指定索引"
     
     def execute(self, context):

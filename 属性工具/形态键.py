@@ -442,7 +442,7 @@ def register():
     bpy.utils.register_class(O_ShapeKeysRenameByOrder)
 
     bpy.types.Scene.shape_key_similarity_threshold = bpy.props.FloatProperty(
-        name="形态键相似度阈值",
+        name="相似度",
         description="匹配形态键时的最小相似度(0-1)",
         default=0.94,
         min=0.5,

@@ -1,21 +1,28 @@
 # type: ignore
 import bpy
-from bpy.props import IntProperty
+from bpy.props import IntProperty, FloatProperty, PointerProperty
 import mathutils
 from mathutils import Vector
 import math
 import re
 
-class ObjType(bpy.types.Operator):
+# --- 工具类与函数 ---
+
+class XQFA_Utils:
+    @staticmethod
     def is_mesh(scene, obj):
         return obj.type == "MESH"
     
+    @staticmethod
     def is_armature(scene, obj):
         return obj.type == "ARMATURE"
 
-class P_DEMO(bpy.types.Panel):
+
+# --- 界面面板 ---
+
+class XQFA_PT_Demo(bpy.types.Panel):
     bl_label = "测试"
-    bl_idname = "X_PT_DEMO"
+    bl_idname = "XQFA_PT_demo"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = 'XQFA'
@@ -28,10 +35,10 @@ class P_DEMO(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         col = layout.column()
-        col.operator(X_OT_NumberToBone.bl_idname, icon="ARROW_LEFTRIGHT")
-        col.operator(MiniPlaneOperator.bl_idname, icon="MESH_CUBE")
-        col.operator(RenameToComponents.bl_idname, icon="OUTLINER_OB_EMPTY")
-        col.operator(TANGENTSPACE_OCTAHEDRAL_UV_OT_operator.bl_idname, icon='UV')
+        col.operator(XQFA_OT_NumberToBone.bl_idname, icon="ARROW_LEFTRIGHT")
+        col.operator(XQFA_OT_MiniPlane.bl_idname, icon="MESH_CUBE")
+        col.operator(XQFA_OT_RenameComponents.bl_idname, icon="OUTLINER_OB_EMPTY")
+        col.operator(XQFA_OT_OctahedralUV.bl_idname, icon='UV')
 
         row = col.row(align=True)
         row.prop(context.scene, "sk_source_mesh", text = "", icon="MESH_DATA")
@@ -47,19 +54,17 @@ class P_DEMO(bpy.types.Panel):
                     row.label(text="错误: 物体有多个骨架修改器", icon='ERROR')
             else:
                 row.label(text="错误: 物体没有骨架修改器", icon='ERROR')
-        row.operator(ApplyAsShapekey.bl_idname, icon="SHAPEKEY_DATA")
+        row.operator(XQFA_OT_ApplyAsShapekey.bl_idname, icon="SHAPEKEY_DATA")
 
-        
+# --- 算子 (Operators) ---
 
-
-
-class MiniPlaneOperator(bpy.types.Operator):
+class XQFA_OT_MiniPlane(bpy.types.Operator):
     bl_idname = "xqfa.mini_plane"
     bl_label = "创建空模"
     bl_description = "创建一个极小的平面网格，并将其分配到两个顶点组中"
     bl_options = {'REGISTER', 'UNDO'}
 
-    plane_size: bpy.props.FloatProperty(
+    plane_size: FloatProperty(
         name="平面大小",
         description="平面的尺寸",
         default=0.0001,
@@ -67,7 +72,7 @@ class MiniPlaneOperator(bpy.types.Operator):
         max=0.001
     )
 
-    primary_weight: bpy.props.FloatProperty(
+    primary_weight: FloatProperty(
         name="主权重",
         description="第一个顶点组的权重值",
         default=0.99,
@@ -75,7 +80,7 @@ class MiniPlaneOperator(bpy.types.Operator):
         max=1.0
     )
 
-    secondary_weight: bpy.props.FloatProperty(
+    secondary_weight: FloatProperty(
         name="次权重",
         description="第二个顶点组的权重值",
         default=0.02,
@@ -149,7 +154,7 @@ class MiniPlaneOperator(bpy.types.Operator):
         return {'FINISHED'}
 
 
-class RenameToComponents(bpy.types.Operator):
+class XQFA_OT_RenameComponents(bpy.types.Operator):
     bl_idname = "xqfa.rename_to_components"
     bl_label = "重命名：C-->Components"
     bl_options = {'REGISTER', 'UNDO'}
@@ -191,7 +196,7 @@ class RenameToComponents(bpy.types.Operator):
         self.report({'INFO'}, f"成功重命名 {rename_count} 个物体")
         return {'FINISHED'}
     
-class ApplyAsShapekey(bpy.types.Operator):
+class XQFA_OT_ApplyAsShapekey(bpy.types.Operator):
     bl_idname = "xqfa.apply_as_shapekey"
     bl_label = "应用为形态键"
     bl_description = "将当前骨架的姿态应用为目标物体的形态键"
@@ -255,7 +260,7 @@ class ApplyAsShapekey(bpy.types.Operator):
         
         return {'FINISHED'}
     
-class X_OT_NumberToBone(bpy.types.Operator):
+class XQFA_OT_NumberToBone(bpy.types.Operator):
     bl_idname = "xqfa.num_to_bone"
     bl_label = "数字顶点组<-->骨骼名称"
     bl_description = "自动执行：清除材质->按名分配材质->合并->匹配重命名->排序->按材质分离->添加骨架->匹配材质"
@@ -416,7 +421,6 @@ class X_OT_NumberToBone(bpy.types.Operator):
         self.report({'INFO'}, f"已匹配顶点组，已匹配 {match_count} 个材质")
         return {'FINISHED'}
     
-
 def unit_vector_to_octahedron(n):
     """
     Converts a unit vector to octahedron coordinates.
@@ -491,7 +495,9 @@ def calc_smooth_normals(mesh):
     
     return vertex_normals
 
-class TANGENTSPACE_OCTAHEDRAL_UV_OT_operator(bpy.types.Operator):
+
+
+class XQFA_OT_OctahedralUV(bpy.types.Operator):
     """生成切线空间的八面体UV映射"""
     bl_idname = "xqfa.octahedral_uv"
     bl_label = "平滑法线-八面体UV"
@@ -601,30 +607,31 @@ class TANGENTSPACE_OCTAHEDRAL_UV_OT_operator(bpy.types.Operator):
         
         return True
 
+# --- 注册/注销逻辑 ---
+
+classes = (
+    XQFA_PT_Demo,
+    XQFA_OT_NumberToBone,
+    XQFA_OT_MiniPlane,
+    XQFA_OT_RenameComponents,
+    XQFA_OT_ApplyAsShapekey,
+    XQFA_OT_OctahedralUV,
+)
 
 def register():
-    bpy.utils.register_class(P_DEMO)
-    bpy.utils.register_class(X_OT_NumberToBone)
-    bpy.utils.register_class(MiniPlaneOperator)
-    bpy.utils.register_class(RenameToComponents)
-    bpy.utils.register_class(ApplyAsShapekey)
-    bpy.types.Scene.sk_source_mesh = bpy.props.PointerProperty(
+    for cls in classes:
+        bpy.utils.register_class(cls)
+
+    bpy.types.Scene.sk_source_mesh = PointerProperty(
         description="选择编辑形态键的物体",
         type=bpy.types.Object, 
-        poll=ObjType.is_mesh
-        )
-
-    bpy.utils.register_class(TANGENTSPACE_OCTAHEDRAL_UV_OT_operator)
+        poll=XQFA_Utils.is_mesh
+    )
 
 
 def unregister():
-    bpy.utils.unregister_class(P_DEMO)
-    bpy.utils.unregister_class(X_OT_NumberToBone)
-    bpy.utils.unregister_class(MiniPlaneOperator)
-    bpy.utils.unregister_class(RenameToComponents)
-    bpy.utils.unregister_class(ApplyAsShapekey)
+    for cls in reversed(classes):
+        bpy.utils.unregister_class(cls)
+
     del bpy.types.Scene.sk_source_mesh
-
-    bpy.utils.unregister_class(TANGENTSPACE_OCTAHEDRAL_UV_OT_operator)
-
 

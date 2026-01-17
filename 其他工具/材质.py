@@ -3,7 +3,7 @@ import bpy
 from bpy.props import IntProperty
 import numpy as np
 
-class NODE_OT_detect_normal_format(bpy.types.Operator):
+class XQFA_OT_detect_normal_format(bpy.types.Operator):
     """基于 Sobel 算子和全图向量化运算的法线格式诊断"""
     bl_idname = "xqfa.detect_normal_format"
     bl_label = "深度法线分析 (Sobel)"
@@ -80,7 +80,7 @@ class NODE_OT_detect_normal_format(bpy.types.Operator):
         
         return {'FINISHED'}
 
-class NODE_OT_add_packed_image(bpy.types.Operator):
+class XQFA_OT_add_packed_image(bpy.types.Operator):
     """创建已打包图像"""
     bl_idname = "xqfa.add_packed_image"
     bl_label = "创建已打包图像"
@@ -124,7 +124,7 @@ class NODE_OT_add_packed_image(bpy.types.Operator):
         return context.window_manager.invoke_props_dialog(self)
 
 
-class NODE_OT_add_material(bpy.types.Operator):
+class XQFA_OT_add_material(bpy.types.Operator):
     bl_idname = "xqfa.add_material"
     bl_label = "新建3贴图材质"
     bl_options = {'REGISTER', 'UNDO'}
@@ -188,10 +188,59 @@ class NODE_OT_add_material(bpy.types.Operator):
     def invoke(self, context, event):
         return context.window_manager.invoke_props_dialog(self)
 
+class XQFA_OT_ensure_material(bpy.types.Operator):
+    """为所有选中的无材质物体创建同名材质"""
+    bl_idname = "xqfa.ensure_material"
+    bl_label = "补全缺失材质"
+    bl_description = "遍历选中物体：如果物体没有材质，则创建一个以物体名命名的材质"
+    bl_options = {'REGISTER', 'UNDO'}
 
-class NODE_PT_xqfa_tools(bpy.types.Panel):
+    @classmethod
+    def poll(cls, context):
+        return context.selected_objects is not None
+
+    def execute(self, context):
+        created_count = 0
+        assigned_count = 0
+        
+        for obj in context.selected_objects:
+            # 只处理网格或可以拥有材质的物体类型
+            if obj.type not in {'MESH', 'CURVE', 'SURFACE', 'META', 'FONT'}:
+                continue
+                
+            # 检查物体是否有材质槽且槽位中是否有材质
+            has_material = False
+            if obj.material_slots:
+                for slot in obj.material_slots:
+                    if slot.material:
+                        has_material = True
+                        break
+            
+            if not has_material:
+                # 检查 Blender 数据中是否已经存在同名材质
+                mat_name = obj.name
+                mat = bpy.data.materials.get(mat_name)
+                
+                if mat is None:
+                    # 创建新材质
+                    mat = bpy.data.materials.new(name=mat_name)
+                    mat.use_nodes = True  # 默认开启节点以便后续编辑
+                    created_count += 1
+                
+                # 分配材质
+                if not obj.data.materials:
+                    obj.data.materials.append(mat)
+                else:
+                    obj.data.materials[0] = mat
+                assigned_count += 1
+
+        self.report({'INFO'}, f"材质补全完成：新建 {created_count} 个，分配给 {assigned_count} 个物体")
+        return {'FINISHED'}
+
+class XQFA_PT_material_tools(bpy.types.Panel):
     """在节点编辑器侧边栏中添加面板"""
     bl_label = "XQFA 材质工具"
+    bl_idname = "xqfa.material_tools_panel"
     bl_space_type = 'NODE_EDITOR'
     bl_region_type = 'UI'
     bl_category = "XQFA"
@@ -200,21 +249,25 @@ class NODE_PT_xqfa_tools(bpy.types.Panel):
         layout = self.layout
         
         col = layout.column()
-        col.operator(NODE_OT_add_packed_image.bl_idname, icon='IMAGE_DATA')
-        col.operator(NODE_OT_add_material.bl_idname, icon='MATERIAL')
-        col.operator(NODE_OT_detect_normal_format.bl_idname, icon='NODE_SEL')
+        col.operator(XQFA_OT_add_packed_image.bl_idname, icon='IMAGE_DATA')
+        col.operator(XQFA_OT_add_material.bl_idname, icon='MATERIAL')
+        col.operator(XQFA_OT_detect_normal_format.bl_idname, icon='NODE_SEL')
+        col.operator(XQFA_OT_ensure_material.bl_idname, icon='MATERIAL_DATA')
 
+classes = (
+    XQFA_OT_detect_normal_format,
+    XQFA_OT_add_packed_image,
+    XQFA_OT_add_material,
+    XQFA_OT_ensure_material,
+    XQFA_PT_material_tools,
+)
 
 def register():
-    bpy.utils.register_class(NODE_OT_detect_normal_format)
-    bpy.utils.register_class(NODE_OT_add_packed_image)
-    bpy.utils.register_class(NODE_OT_add_material)
-    bpy.utils.register_class(NODE_PT_xqfa_tools)
+    for cls in classes:
+        bpy.utils.register_class(cls)
 
 
 def unregister():
-    bpy.utils.unregister_class(NODE_OT_detect_normal_format)
-    bpy.utils.unregister_class(NODE_OT_add_packed_image)
-    bpy.utils.unregister_class(NODE_OT_add_material)
-    bpy.utils.unregister_class(NODE_PT_xqfa_tools)
+    for cls in reversed(classes):
+        bpy.utils.unregister_class(cls)
 

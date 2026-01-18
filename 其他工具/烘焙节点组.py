@@ -2,6 +2,8 @@
 import bpy
 import os
 import numpy as np
+import subprocess
+
 
 # --- 1. 存储输出端口的属性组 ---
 class MultiOutputItem(bpy.types.PropertyGroup):
@@ -15,21 +17,56 @@ class MultiOutputItem(bpy.types.PropertyGroup):
 class ChannelConfig(bpy.types.PropertyGroup):
     # 引用来源输出节点的名称
     source_output: bpy.props.StringProperty(name="来源输出", default="")
-    # 选择来源的具体通道：R, G, B, A, 或 Mean(BW)
+    # 互斥按钮组：通过 EnumProperty 的 'EXPAND' 样式实现
     channel_src: bpy.props.EnumProperty(
         name="分量",
         items=[
-            ('R', 'R', ""),
-            ('G', 'G', ""),
-            ('B', 'B', ""),
-            ('A', 'A', ""),
-            ('L', 'L', "")
+            # 参数顺序: (Identifier, Name, Description, Icon, Value)
+            ('R', '', "使用红色通道", 'EVENT_R', 0),
+            ('G', '', "使用绿色通道", 'EVENT_G', 1),
+            ('B', '', "使用蓝色通道", 'EVENT_B', 2),
+            ('A', '', "使用Alpha通道", 'EVENT_A', 3),
+            ('L', '', "使用灰度(Mean)", 'EVENT_L', 4)
         ],
         default='L'
     )
+    # 新增：反转属性
+    invert: bpy.props.BoolProperty(name="反转", default=False)
 
 class PackImageItem(bpy.types.PropertyGroup):
     name: bpy.props.StringProperty(name="图片名", default="Pack_Result")
+    export_format: bpy.props.EnumProperty(
+        name="导出格式",
+        items=[
+            ('', "未压缩格式", ""),
+            ('TGA', "TGA", ""),
+            ('R8G8B8A8_UNORM', "R8G8B8A8_UNORM", "标准的 RGBA 格式"),
+            ('R8G8B8A8_UNORM_SRGB', "R8G8B8A8_UNORM_SRGB", "标准的 RGBA 格式"),
+            ('R8G8B8A8_SNORM', "R8G8B8A8_SNORM", "有符号归一化格式，-1.0到1.0"),
+            ('R8G8B8A8_UINT', "R8G8B8A8_UINT", "无符号整数格式，0-255不进行归一化"),
+            ('R8G8B8A8_SINT', "R8G8B8A8_SINT", "有符号整数格式，-128到127不进行归一化"),
+            ('R32G32B32A32_FLOAT', "R32G32B32A32_FLOAT", "全精度浮点格式"),
+            ('R32G32B32A32_UINT', "R32G32B32A32_UINT", "无符号整数格式"),
+            ('R32G32B32A32_SINT', "R32G32B32A32_SINT", "有符号整数格式"),
+            ('', "DDS Linear/Unsigned", ""),
+            ('BC1_UNORM', "BC1_UNORM", "DXT1不带透明度"),
+            ('BC2_UNORM', "BC2_UNORM", "DXT3带锐利透明度（4位 Alpha）。适用于透明边缘分明的物体。"),
+            ('BC3_UNORM', "BC3_UNORM", "DXT5带渐变透明度（8位 Alpha）。最常用的透明贴图格式。"),
+            ('BC4_UNORM', "BC4_UNORM", "ATI1单通道压缩Unsigned Normalized无符号归一化。常用 高度图、粗糙度、金属度、遮蔽"),
+            ('BC5_UNORM', "BC5_UNORM", "ATI2/3DC双通道压缩Unsigned Normalized无符号归一化。常用作法线贴图"),
+            ('BC6H_UF16', "BC6H_UF16", "Unsigned Float 16-bit，HDR 高动态范围图像"),
+            ('BC7_UNORM', "BC7_UNORM", "高质量压缩，现代游戏标准"),
+            ('', "DDS SRGB/Signed", ""),
+            ('BC1_UNORM_SRGB', "BC1_UNORM_SRGB", "DXT1不带透明度"),
+            ('BC2_UNORM_SRGB', "BC2_UNORM_SRGB", "DXT3带锐利透明度（4位 Alpha）。适用于透明边缘分明的物体。"),
+            ('BC3_UNORM_SRGB', "BC3_UNORM_SRGB", "DXT5带渐变透明度（8位 Alpha）。最常用的透明贴图格式。"),
+            ('BC4_SNORM', "BC4_SNORM", "ATI1单通道压缩Signed Normalized有符号归一化。常用 法线贴图的单个通道、偏移向量"),
+            ('BC5_SNORM', "BC5_SNORM", "ATI2/3DC双通道压缩Signed Normalized有符号归一化。常用作法线贴图"),
+            ('BC6H_SF16', "BC6H_SF16", "Signed Float 16-bit，HDR 高动态范围图像"),
+            ('BC7_UNORM_SRGB', "BC7_UNORM_SRGB", "高质量压缩 (sRGB)，现代游戏标准"),
+        ],
+        default='TGA'
+    )
     # 为 RGBA 四个通道分别创建配置
     r: bpy.props.PointerProperty(type=ChannelConfig)
     g: bpy.props.PointerProperty(type=ChannelConfig)
@@ -38,25 +75,13 @@ class PackImageItem(bpy.types.PropertyGroup):
 
 # --- 2. 核心属性管理 ---
 class BatchBakeProperties(bpy.types.PropertyGroup):
-    def get_group_items(self, context):
-        items = [("NONE", "请选择节点组...", "0")]
-        obj = context.active_object
-        if not obj or not obj.active_material or not obj.active_material.use_nodes:
-            return items
-        nodes = obj.active_material.node_tree.nodes
-        found_groups = []
-        for node in nodes:
-            if node.type == 'GROUP' and node.node_tree:
-                label = f"{node.node_tree.name} ({node.name})"
-                found_groups.append((node.node_tree.name, label, ""))
-        return found_groups if found_groups else items
 
     def update_outputs(self, context):
         obj = context.active_object
         if not obj or not obj.active_material: return
         mat = obj.active_material
         self.output_items.clear()
-        target_node = next((n for n in mat.node_tree.nodes if n.type == 'GROUP' and n.node_tree.name == self.target_group), None)
+        target_node = next((n for n in mat.node_tree.nodes if n.type == 'GROUP' and n.node_tree and n.node_tree.name == self.target_group), None)
         if target_node:
             for output in target_node.outputs:
                 item = self.output_items.add()
@@ -71,7 +96,10 @@ class BatchBakeProperties(bpy.types.PropertyGroup):
                 else:
                     item.is_normal, item.is_bw, item.is_linear = False, False, False
 
-    target_group: bpy.props.EnumProperty(name="节点组", items=get_group_items, update=update_outputs)
+    target_group: bpy.props.StringProperty(
+        name="节点组",
+        update=update_outputs # 保留你原有的更新逻辑
+    )
     output_items: bpy.props.CollectionProperty(type=MultiOutputItem)
     
     # 打包相关属性
@@ -86,6 +114,17 @@ class BatchBakeProperties(bpy.types.PropertyGroup):
     show_outputs: bpy.props.BoolProperty(name="展开输出端口", default=True)
     show_packing: bpy.props.BoolProperty(name="展开通道打包", default=True)
     show_settings: bpy.props.BoolProperty(name="展开导出设置", default=True)
+
+    keep_only_packed: bpy.props.BoolProperty(
+        name="仅保留通道打包", 
+        description="所有操作结束后，删除物理磁盘上的原始单项烘焙图片",
+        default=True
+    )
+    clean_blender_images: bpy.props.BoolProperty(
+        name="清理Blender烘焙结果", 
+        description="所有操作结束后，从Blender内存中移除生成的图像对象",
+        default=True
+    )
 
 # --- 3. 核心烘焙逻辑 ---
 class M_OT_BatchBakeModal(bpy.types.Operator):
@@ -168,9 +207,22 @@ class M_OT_BatchBakeModal(bpy.types.Operator):
         self._is_baking = False
 
     def execute(self, context):
+        # --- 1. 检查 texconv 路径 ---
+        addon_prefs = context.preferences.addons[__package__.split('.')[0]].preferences
+        texconv = bpy.path.abspath(addon_prefs.texconv_path)
+        
+        # 检查是否有项需要转 DDS，如果有，校验路径
         props = context.scene.batch_bake_props
+        needs_dds = any(item.export_format != 'TGA' for item in props.pack_items)
+        
+        if needs_dds and (not texconv or not os.path.exists(texconv)):
+            self.report({'ERROR'}, "未指定或找不到 texconv.exe，请在插件偏好设置中配置")
+            return {'CANCELLED'}
+        
         selected_objs = [o for o in context.selected_objects if o.type == 'MESH']
-        if not selected_objs: return {'CANCELLED'}
+        if not selected_objs: 
+            self.report({'ERROR'}, "请至少选择一个网格对象进行烘焙")
+            return {'CANCELLED'}
         
         self._export_dir = bpy.path.abspath(props.export_path)
         if not os.path.exists(self._export_dir): os.makedirs(self._export_dir)
@@ -187,7 +239,9 @@ class M_OT_BatchBakeModal(bpy.types.Operator):
                         self._original_links[mat.name] = out.inputs['Surface'].links[0].from_socket
 
         self._queue = [(i.name, i.is_bw, i.is_linear, i.is_normal) for i in props.output_items if i.selected]
-        if not self._queue: return {'CANCELLED'}
+        if not self._queue: 
+            self.report({'ERROR'}, "未选择任何输出端口进行烘焙")
+            return {'CANCELLED'}
 
         wm = context.window_manager
         self._timer = wm.event_timer_add(0.1, window=context.window)
@@ -195,9 +249,11 @@ class M_OT_BatchBakeModal(bpy.types.Operator):
         return {'RUNNING_MODAL'}
 
     def process_packing(self, context):
-        """核心打包逻辑：确保导出为 TGA"""
+        """核心打包逻辑"""
         props = context.scene.batch_bake_props
         res = int(props.bake_resolution)
+        addon_prefs = context.preferences.addons[__package__.split('.')[0]].preferences
+        texconv_bin = bpy.path.abspath(addon_prefs.texconv_path)
         
         # 记录原始渲染设置，以便保存后恢复
         render_settings = context.scene.render.image_settings
@@ -211,7 +267,7 @@ class M_OT_BatchBakeModal(bpy.types.Operator):
         render_settings.color_depth = '8' # TGA 通常为 8bit
 
         for pack_cfg in props.pack_items:
-            pack_img_name = f"{props.file_prefix}_{pack_cfg.name}"
+            pack_img_name = f"{props.file_prefix}_{pack_cfg.name}_{pack_cfg.export_format}"
             # 检查是否已存在同名图像，存在则删除以防数据残留
             if pack_img_name in bpy.data.images:
                 bpy.data.images.remove(bpy.data.images[pack_img_name])
@@ -240,22 +296,39 @@ class M_OT_BatchBakeModal(bpy.types.Operator):
                             pixels[i::4] = src_pixels[3::4]
                         elif cfg.channel_src == 'L':
                             pixels[i::4] = (src_pixels[0::4] + src_pixels[1::4] + src_pixels[2::4]) / 3.0
-            
+                        # 执行反转逻辑
+                    if cfg.invert:
+                        pixels[i::4] = 1.0 - pixels[i::4]
+
             pack_img.pixels = pixels.tolist()
-            
-            # 确保路径后缀正确
-            save_filename = f"{pack_img_name}.tga"
-            file_path = os.path.join(self._export_dir, save_filename)
-            
-            # 执行保存
-            try:
-                pack_img.save_render(file_path, scene=context.scene)
-                self.report({'INFO'}, f"成功导出打包贴图: {save_filename}")
-            except Exception as e:
-                self.report({'ERROR'}, f"导出 TGA 失败: {str(e)}")
-            
-            # 清理内存中的预览图（可选，如果不需要在Blender内查看）
-            # bpy.data.images.remove(pack_img)
+
+            # 保存 TGA
+            tga_name = f"{pack_img_name}.tga"
+            tga_path = os.path.join(self._export_dir, tga_name)
+            pack_img.save_render(tga_path, scene=context.scene)
+
+
+            # --- 新增：DDS 转换逻辑 ---
+            if pack_cfg.export_format != 'TGA':
+                try:
+                    # 构建命令行参数
+                    # -f: 格式, -y: 覆盖, -o: 输出目录
+                    cmd = [
+                        texconv_bin,
+                        "-f", pack_cfg.export_format,
+                        "-y", 
+                        "-o", self._export_dir,
+                        tga_path
+                    ]
+                    # 隐藏控制台窗口执行
+                    subprocess.run(cmd, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
+                    # 删除临时的TGA文件
+                    if os.path.exists(tga_path):
+                        os.remove(tga_path)
+                    self.report({'INFO'}, f"已转换: {pack_img_name}.dds")
+                except Exception as e:
+                    self.report({'ERROR'}, f"DDS 转换失败: {str(e)}")
+
 
         # 恢复原始渲染设置
         render_settings.file_format = old_format
@@ -263,7 +336,35 @@ class M_OT_BatchBakeModal(bpy.types.Operator):
         render_settings.color_depth = old_depth
 
     def finish(self, context):
+        props = context.scene.batch_bake_props
+        # 1. 执行打包逻辑
         self.process_packing(context)
+        
+        # 2. 逻辑：仅保留通道打包 (删除磁盘上的原始烘焙图)
+        if props.keep_only_packed:
+            for item_name in [i.name for i in props.output_items if i.selected]:
+                # 严格匹配 run_next_bake 生成的文件名
+                base_name = f"{props.file_prefix}_{props.target_group}_{item_name}.png"
+                target_file = os.path.join(self._export_dir, base_name)
+                if os.path.exists(target_file):
+                    try:
+                        os.remove(target_file)
+                    except Exception as e:
+                        print(f"无法删除临时文件 {base_name}: {e}")
+
+        # 3. 逻辑：清理 Blender 内存结果
+        if props.clean_blender_images:
+            for img in self._baked_images.values():
+                # 检查图像是否仍然存在于内存中（防止重复删除报错）
+                if img.name in bpy.data.images:
+                    try:
+                        bpy.data.images.remove(img, do_unlink=True)
+                    except:
+                        pass
+            # 清空引用字典
+            self._baked_images.clear()
+
+        # 4. 恢复节点连接
         self.restore_all_connections(context)
         context.window_manager.event_timer_remove(self._timer)
         self.report({'INFO'}, "批量烘焙及打包全部完成！")
@@ -303,8 +404,11 @@ class M_OT_PackItemManage(bpy.types.Operator):
 # --- 5. UI 面板 ---
 class M_UL_PackList(bpy.types.UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname):
-        layout.label(text=item.name, icon='IMAGE_RGB_ALPHA')
+        # 关键修改：将 label 改为 prop，并设置 emboss=False
+        # 这样在列表中看起来像文字，但点击后可以编辑
+        layout.prop(item, "name", text="", emboss=False, icon='IMAGE_RGB_ALPHA')
 
+            
 class M_PT_BatchBakePanel(bpy.types.Panel):
     bl_label = "节点组烘焙"
     bl_idname = "M_PT_batch_bake_panel"
@@ -316,7 +420,7 @@ class M_PT_BatchBakePanel(bpy.types.Panel):
         layout = self.layout
         props = context.scene.batch_bake_props
         
-        layout.prop(props, "target_group")
+        layout.prop_search(props, "target_group", bpy.data, "node_groups", text="")
 
         # --- 1. 选择输出端口 (可折叠) ---
         box = layout.box()
@@ -353,15 +457,14 @@ class M_PT_BatchBakePanel(bpy.types.Panel):
             if props.pack_items and props.pack_index < len(props.pack_items):
                 active_pack = props.pack_items[props.pack_index]
                 col = box.column(align=False)
-                col.prop(active_pack, "name", text="图片名")
-                
+                col.prop(active_pack, "export_format", text="输出格式")
+
                 for ch_name in ['r', 'g', 'b', 'a']:
                     cfg = getattr(active_pack, ch_name)
-                    split = col.split(factor=0.1, align=True)
-                    split.label(text=ch_name.upper())
-                    row = split.row(align=True)
-                    row.prop_search(cfg, "source_output", props, "output_items", text="")
-                    row.prop(cfg, "channel_src", text="")
+                    row = col.row(align=True)
+                    row.prop_search(cfg, "source_output", props, "output_items", text=ch_name.upper())
+                    row.prop(cfg, "channel_src", expand=True)
+                    row.prop(cfg, "invert", text="", icon='EVENT_I', toggle=True)
 
 
         # --- 3. 导出设置 (可折叠) ---
@@ -375,6 +478,10 @@ class M_PT_BatchBakePanel(bpy.types.Panel):
             col.prop(props, "bake_resolution")
             col.prop(props, "file_prefix")
             col.prop(props, "export_path")
+            row = col.row(align=True)
+            row.prop(props, "keep_only_packed", toggle=True, icon='TRASH')
+            row.prop(props, "clean_blender_images", toggle=True, icon='X')
+        
         
         layout.operator("object.batch_bake_modal", icon='RENDER_STILL', text="开始烘焙并打包")
 
@@ -399,6 +506,3 @@ def unregister():
     del bpy.types.Scene.batch_bake_props
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
-
-if __name__ == "__main__":
-    register()

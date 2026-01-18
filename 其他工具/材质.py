@@ -191,7 +191,7 @@ class XQFA_OT_add_material(bpy.types.Operator):
 class XQFA_OT_ensure_material(bpy.types.Operator):
     """为所有选中的无材质物体创建同名材质"""
     bl_idname = "xqfa.ensure_material"
-    bl_label = "补全缺失材质"
+    bl_label = "批量创建材质"
     bl_description = "遍历选中物体：如果物体没有材质，则创建一个以物体名命名的材质"
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -237,10 +237,10 @@ class XQFA_OT_ensure_material(bpy.types.Operator):
         self.report({'INFO'}, f"材质补全完成：新建 {created_count} 个，分配给 {assigned_count} 个物体")
         return {'FINISHED'}
 
+
 class XQFA_PT_material_tools(bpy.types.Panel):
     """在节点编辑器侧边栏中添加面板"""
     bl_label = "XQFA 材质工具"
-    bl_idname = "xqfa.material_tools_panel"
     bl_space_type = 'NODE_EDITOR'
     bl_region_type = 'UI'
     bl_category = "XQFA"

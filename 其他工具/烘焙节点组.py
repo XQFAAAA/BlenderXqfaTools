@@ -67,6 +67,11 @@ class PackImageItem(bpy.types.PropertyGroup):
         ],
         default='TGA'
     )
+    extra_args: bpy.props.StringProperty(
+        name="额外参数",
+        description="传递给 texconv 的额外命令行参数",
+        default="-m 1"
+    )
     # 为 RGBA 四个通道分别创建配置
     r: bpy.props.PointerProperty(type=ChannelConfig)
     g: bpy.props.PointerProperty(type=ChannelConfig)
@@ -107,7 +112,11 @@ class BatchBakeProperties(bpy.types.PropertyGroup):
     pack_index: bpy.props.IntProperty()
     
     bake_resolution: bpy.props.StringProperty(name="分辨率", default="2048")
-    file_prefix: bpy.props.StringProperty(name="名称前缀", default="Bake")
+    naming_rule: bpy.props.StringProperty(
+        name="名称规则", 
+        default="{node}{output}{pack}{pack_format}",
+        description="可用占位符: {node}, {output}, {pack}, {pack_format}"
+    )
     export_path: bpy.props.StringProperty(name="保存路径", default="//", subtype='DIR_PATH')
 
     # 控制 UI 折叠状态
@@ -154,8 +163,15 @@ class M_OT_BatchBakeModal(bpy.types.Operator):
         c_mode = 'BW' if is_bw else 'RGB'
         c_space = 'Linear' if is_linear else 'sRGB'
         res = int(props.bake_resolution)
-        prefix = props.file_prefix.strip()
-        base_name = f"{prefix}_{props.target_group}_{item_name}"
+        # 单项烘焙时，pack 和 pack_format 传入空字符串
+        base_name = props.naming_rule.format(
+            node=props.target_group,
+            output=item_name,
+            pack="",
+            pack_format=""
+        )
+        # 清理非法路径字符并去除可能产生的多余空格或下划线
+        # base_name = bpy.path.clean_name(base_name)
             
         image = bpy.data.images.get(base_name) or bpy.data.images.new(base_name, width=res, height=res)
         image.scale(res, res)
@@ -267,7 +283,13 @@ class M_OT_BatchBakeModal(bpy.types.Operator):
         render_settings.color_depth = '8' # TGA 通常为 8bit
 
         for pack_cfg in props.pack_items:
-            pack_img_name = f"{props.file_prefix}_{pack_cfg.name}_{pack_cfg.export_format}"
+            pack_img_name = props.naming_rule.format(
+                node=props.target_group,
+                output="", 
+                pack=pack_cfg.name,
+                pack_format=pack_cfg.export_format
+            )
+            # pack_img_name = bpy.path.clean_name(pack_img_name)
             # 检查是否已存在同名图像，存在则删除以防数据残留
             if pack_img_name in bpy.data.images:
                 bpy.data.images.remove(bpy.data.images[pack_img_name])
@@ -311,16 +333,22 @@ class M_OT_BatchBakeModal(bpy.types.Operator):
             # --- 新增：DDS 转换逻辑 ---
             if pack_cfg.export_format != 'TGA':
                 try:
-                    # 构建命令行参数
-                    # -f: 格式, -y: 覆盖, -o: 输出目录
+                    # 构建基础命令行参数
                     cmd = [
                         texconv_bin,
                         "-f", pack_cfg.export_format,
                         "-y", 
-                        "-o", self._export_dir,
-                        tga_path
+                        "-o", self._export_dir
                     ]
-                    # 隐藏控制台窗口执行
+                    
+                    # 修改：解析并添加额外参数
+                    if pack_cfg.extra_args.strip():
+                        # 将字符串按空格拆分成列表，避免被视为单个参数
+                        cmd.extend(pack_cfg.extra_args.split())
+                    
+                    # 添加输入文件路径
+                    cmd.append(tga_path)
+
                     subprocess.run(cmd, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
                     # 删除临时的TGA文件
                     if os.path.exists(tga_path):
@@ -343,14 +371,16 @@ class M_OT_BatchBakeModal(bpy.types.Operator):
         # 2. 逻辑：仅保留通道打包 (删除磁盘上的原始烘焙图)
         if props.keep_only_packed:
             for item_name in [i.name for i in props.output_items if i.selected]:
-                # 严格匹配 run_next_bake 生成的文件名
-                base_name = f"{props.file_prefix}_{props.target_group}_{item_name}.png"
-                target_file = os.path.join(self._export_dir, base_name)
+                # 修改：使用与 run_next_bake 相同的规则重建文件名
+                name = props.naming_rule.format(
+                    node=props.target_group,
+                    output=item_name,
+                    pack="",
+                    pack_format=""
+                )
+                target_file = os.path.join(self._export_dir, f"{bpy.path.clean_name(name)}.png")
                 if os.path.exists(target_file):
-                    try:
-                        os.remove(target_file)
-                    except Exception as e:
-                        print(f"无法删除临时文件 {base_name}: {e}")
+                    os.remove(target_file)
 
         # 3. 逻辑：清理 Blender 内存结果
         if props.clean_blender_images:
@@ -457,7 +487,9 @@ class M_PT_BatchBakePanel(bpy.types.Panel):
             if props.pack_items and props.pack_index < len(props.pack_items):
                 active_pack = props.pack_items[props.pack_index]
                 col = box.column(align=False)
-                col.prop(active_pack, "export_format", text="输出格式")
+                row = col.row(align=True)
+                col.prop(active_pack, "export_format", text="格式")
+                col.prop(active_pack, "extra_args", text="参数")
 
                 for ch_name in ['r', 'g', 'b', 'a']:
                     cfg = getattr(active_pack, ch_name)
@@ -476,7 +508,7 @@ class M_PT_BatchBakePanel(bpy.types.Panel):
         if props.show_settings:
             col = box.column(align=False)
             col.prop(props, "bake_resolution")
-            col.prop(props, "file_prefix")
+            col.prop(props, "naming_rule")
             col.prop(props, "export_path")
             row = col.row(align=True)
             row.prop(props, "keep_only_packed", toggle=True, icon='TRASH')

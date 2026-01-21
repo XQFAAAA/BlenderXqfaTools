@@ -19,7 +19,7 @@ class DATA_PT_shape_key_tools(bpy.types.Panel):
         layout = self.layout
         col = layout.column(align=True)
         row = col.row(align=True)
-        row.prop(context.scene, "shape_key_similarity_threshold")
+        row.prop(context.scene, "shape_key_similarity_threshold",text='')
         row.operator(O_ShapeKeysMatchRename.bl_idname, text=O_ShapeKeysMatchRename.bl_label, icon="SORTBYEXT")
         row = col.row(align=True)
         row.operator(O_ShapeKeysSortMatch.bl_idname, text=O_ShapeKeysSortMatch.bl_label, icon="SORTSIZE")

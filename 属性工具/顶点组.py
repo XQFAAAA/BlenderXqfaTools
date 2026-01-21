@@ -35,7 +35,7 @@ class DATA_PT_vertex_group_tools(bpy.types.Panel):
 
         col = layout.column(align=True)
         row = col.row(align=True)
-        row.prop(context.scene, "similarity_threshold")
+        row.prop(context.scene, "similarity_threshold",text='')
         row.operator(O_VertexGroupsMatchRename.bl_idname, text=O_VertexGroupsMatchRename.bl_label, icon="SORTBYEXT")
         row = col.row(align=True)
         row.operator(O_VertexGroupsSortMatch.bl_idname, text=O_VertexGroupsSortMatch.bl_label, icon="SORTSIZE")
@@ -579,7 +579,7 @@ def register():
     bpy.utils.register_class(O_VertexGroupsSortMatch)
 
     bpy.types.Scene.similarity_threshold = bpy.props.FloatProperty(
-        name="顶点组相似度阈值",
+        name="相似度",
         description="匹配顶点组时的最小相似度(0-1)",
         default=0.94,
         min=0.9,

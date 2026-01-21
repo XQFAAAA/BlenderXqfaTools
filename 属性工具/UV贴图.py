@@ -19,16 +19,11 @@ class DATA_PT_uv_map_tools(bpy.types.Panel):
         # 添加操作按钮
         col = layout.column(align=True)
         row = col.row(align=True)
-        row.prop(scene, "uv_map_target_count", text="数量")
-        row.operator(O_AddRenameUVMaps.bl_idname, 
-                    text=O_AddRenameUVMaps.bl_label, 
-                    icon="ADD")
-        
-        row = col.row(align=True)
         row.prop(scene, "uv_map_target_index", text="")
-        row.operator(O_SetActiveUVMaps.bl_idname, icon="RESTRICT_SELECT_OFF")
-        row.operator(O_SetRenderUVMaps.bl_idname, icon="RESTRICT_RENDER_OFF")
-        row.operator(O_RemoveUVMaps.bl_idname, icon="TRASH")
+        row.operator(O_SetActiveUVMaps.bl_idname, text="", icon="RESTRICT_SELECT_OFF")
+        row.operator(O_SetRenderUVMaps.bl_idname, text="", icon="RESTRICT_RENDER_OFF")
+        row.operator(O_RemoveUVMaps.bl_idname, text="", icon="TRASH")
+        row.operator(O_AddRenameUVMaps.bl_idname, text="", icon="SORTALPHA")
 
 
 class O_AddRenameUVMaps(bpy.types.Operator):
@@ -38,12 +33,9 @@ class O_AddRenameUVMaps(bpy.types.Operator):
     
     def execute(self, context):
         scene = context.scene
-        target_count = scene.uv_map_target_count
+        target_index = scene.uv_map_target_index
         
-        if target_count < 1:
-            self.report({'ERROR'}, "数量必须大于0")
-            return {'CANCELLED'}
-            
+
         processed_objects = 0
         added_maps = 0
         renamed_maps = 0
@@ -57,20 +49,24 @@ class O_AddRenameUVMaps(bpy.types.Operator):
             current_count = len(uv_layers)
             
             # 添加不足的数量
-            if current_count < target_count:
-                for i in range(current_count, target_count):
-                    new_uv = uv_layers.new(name=f"TEXCOORD{i}.xy" if i > 0 else "TEXCOORD.xy")
+            if current_count < target_index + 1:
+                for i in range(current_count, target_index + 1):
+                    uv_layers.new(name=f"TEXCOORD{i}.xy" if i > 0 else "TEXCOORD.xy")
                     added_maps += 1
             
             # 重命名所有UV贴图
             for i, uv_layer in enumerate(uv_layers):
+                new_name = f"{i}"
+                uv_layer.name = new_name
+            for i, uv_layer in enumerate(uv_layers):
                 new_name = f"TEXCOORD{i}.xy" if i > 0 else "TEXCOORD.xy"
-                if uv_layer.name != new_name:
-                    uv_layer.name = new_name
-                    renamed_maps += 1
-        
-        self.report({'INFO'}, 
-                   f"处理完成: {processed_objects}个物体, 添加{added_maps}个, 重命名{renamed_maps}个")
+                uv_layer.name = new_name
+
+        # 强制刷新所有区域
+        for area in context.screen.areas:
+            area.tag_redraw()
+        context.view_layer.update()
+        self.report({'INFO'}, f"处理完成: {processed_objects}个物体, 添加{added_maps}个")
         return {'FINISHED'}
 
 class O_SetActiveUVMaps(bpy.types.Operator):
@@ -99,8 +95,11 @@ class O_SetActiveUVMaps(bpy.types.Operator):
             uv_layers.active = uv_layers[target_index]
             set_active_count += 1
         
-        self.report({'INFO'}, 
-                   f"处理完成: {processed_objects}个物体, 设置了{set_active_count}个活动UV")
+        # 强制刷新所有区域
+        for area in context.screen.areas:
+            area.tag_redraw()
+        context.view_layer.update()
+        self.report({'INFO'}, f"处理完成: {processed_objects}个物体, 设置了{set_active_count}个活动UV")
         return {'FINISHED'}
 
 class O_SetRenderUVMaps(bpy.types.Operator):
@@ -133,8 +132,11 @@ class O_SetRenderUVMaps(bpy.types.Operator):
                     uv_layer.active_render = False
             set_render_count += 1
         
-        self.report({'INFO'}, 
-                   f"处理完成: {processed_objects}个物体, 设置了{set_render_count}个渲染UV")
+        # 强制刷新所有区域
+        for area in context.screen.areas:
+            area.tag_redraw()
+        context.view_layer.update()
+        self.report({'INFO'}, f"处理完成: {processed_objects}个物体, 设置了{set_render_count}个渲染UV")
         return {'FINISHED'}
 
 class O_RemoveUVMaps(bpy.types.Operator):
@@ -159,40 +161,46 @@ class O_RemoveUVMaps(bpy.types.Operator):
             if target_index < 0 or target_index >= len(uv_layers):
                 self.report({'WARNING'}, f"物体 {obj.name} 的UV索引 {target_index} 超出范围")
                 continue
-                
+
+            # 检查要删除的层是否是活动层
+            target_is_active = (uv_layers.active == uv_layers[target_index])
+
+            # 记录当前活动层索引（用于重新设置）
+            current_active_index = uv_layers[:].index(uv_layers.active) if uv_layers.active else -1
+            
             # 删除指定索引的UV贴图
             uv_layer_to_remove = uv_layers[target_index]
             uv_layers.remove(uv_layer_to_remove)
             removed_maps += 1
             
             # 确保活动UV和渲染UV有效
-            if len(uv_layers) > 0:
-                if uv_layers.active is None:
+            if len(uv_layers) > 0 and target_is_active:
+                new_active_index = min(current_active_index, len(uv_layers) - 1)
+                if new_active_index >= 0:
+                    uv_layers.active = uv_layers[new_active_index]
+                else:
                     uv_layers.active = uv_layers[0]
-                # 确保至少有一个渲染UV
-                if not any(uv.active_render for uv in uv_layers):
-                    uv_layers[0].active_render = True
+
         
-        self.report({'INFO'}, 
-                   f"处理完成: {processed_objects}个物体, 删除了{removed_maps}个UV贴图")
+        # 强制刷新所有区域
+        for area in context.screen.areas:
+            area.tag_redraw()
+        context.view_layer.update()
+        self.report({'INFO'}, f"处理完成: {processed_objects}个物体, 删除了{removed_maps}个UV贴图")
         return {'FINISHED'}
 
+classes = (
+    DATA_PT_uv_map_tools,
+    O_AddRenameUVMaps,
+    O_SetActiveUVMaps,
+    O_SetRenderUVMaps,
+    O_RemoveUVMaps
+)
+
 def register():
-    bpy.utils.register_class(DATA_PT_uv_map_tools)
-    bpy.utils.register_class(O_AddRenameUVMaps)
-    bpy.utils.register_class(O_SetActiveUVMaps)
-    bpy.utils.register_class(O_SetRenderUVMaps)
-    bpy.utils.register_class(O_RemoveUVMaps)
-    
-    # 添加场景属性用于存储UV贴图数量
-    bpy.types.Scene.uv_map_target_count = bpy.props.IntProperty(
-        name="UV贴图添加数量",
-        description="要添加的UV贴图数量",
-        default=3,
-        min=1,
-        max=32
-    )
-    
+    for cls in classes:
+        bpy.utils.register_class(cls)
+
     # 添加场景属性用于存储目标UV索引
     bpy.types.Scene.uv_map_target_index = bpy.props.IntProperty(
         name="目标UV索引",
@@ -203,11 +211,7 @@ def register():
     )
 
 def unregister():
-    bpy.utils.unregister_class(DATA_PT_uv_map_tools)
-    bpy.utils.unregister_class(O_AddRenameUVMaps)
-    bpy.utils.unregister_class(O_SetActiveUVMaps)
-    bpy.utils.unregister_class(O_SetRenderUVMaps)
-    bpy.utils.unregister_class(O_RemoveUVMaps)
+    for cls in reversed(classes):
+        bpy.utils.unregister_class(cls)
     
-    del bpy.types.Scene.uv_map_target_count
     del bpy.types.Scene.uv_map_target_index

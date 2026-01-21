@@ -14,7 +14,7 @@ from bpy.types import PropertyGroup
 class PaletteColorItem(PropertyGroup):
     color: FloatVectorProperty(
         name="颜色",
-        subtype='COLOR',
+        subtype='COLOR_GAMMA',# 使用 COLOR_GAMMA 而不是 COLOR
         size=4,
         min=0.0,
         max=1.0,
@@ -40,17 +40,15 @@ class DATA_PT_color_attribute_tools(bpy.types.Panel):
         
         # 颜色属性管理
         col = layout.column(align=True)
-        row = col.row(align=True)
-        row.prop(scene, "color_attr_add_count", text="数量")
-        row.operator(O_AddRenameColorAttributes.bl_idname, text=O_AddRenameColorAttributes.bl_label, icon='ADD')
         
         # 添加顶点色层操作按钮
         row = col.row(align=True)
         row.prop(scene, "color_attr_target_index", text="")
-        row.operator(O_SetActiveColorAttributes.bl_idname, icon="RESTRICT_SELECT_OFF")
-        row.operator(O_SetRenderColorAttributes.bl_idname, icon="RESTRICT_RENDER_OFF")
-        row.operator(O_RemoveColorAttributes.bl_idname, icon="TRASH")
-        
+        row.operator(O_SetActiveColorAttributes.bl_idname, text="", icon="RESTRICT_SELECT_OFF")
+        row.operator(O_SetRenderColorAttributes.bl_idname, text="", icon="RESTRICT_RENDER_OFF")
+        row.operator(O_RemoveColorAttributes.bl_idname, text="", icon="TRASH")
+        row.operator(O_AddAndRenameColorAttributes.bl_idname, text="", icon='SORTALPHA')
+        row.operator(O_ConvertColorAttributeType.bl_idname, text="", icon='UV_SYNC_SELECT')
 
         # 添加颜色按钮
         col = layout.column(align=True)
@@ -71,61 +69,11 @@ class DATA_PT_color_attribute_tools(bpy.types.Panel):
             op.color_index = i
         
 
-class O_AddRenameColorAttributes(bpy.types.Operator):
-    bl_idname = "xqfa.color_attr_add_rename"
-    bl_label = "覆盖并重命名"
-    bl_description = "添加颜色属性并重命名为COLOR, COLOR1, COLOR2...格式"
-    
-    def execute(self, context):
-        scene = context.scene
-        target_count = scene.color_attr_add_count
-        
-        if target_count < 1:
-            self.report({'ERROR'}, "数量必须大于0")
-            return {'CANCELLED'}
-            
-        processed_objects = 0
-        added_attrs = 0
-        renamed_attrs = 0
-        
-        for obj in context.selected_objects:
-            if obj.type != 'MESH':
-                continue
-                
-            processed_objects += 1
-            color_attrs = [attr for attr in obj.data.color_attributes 
-                         if attr.domain == 'CORNER' and attr.data_type == 'BYTE_COLOR']
-            current_count = len(color_attrs)
-            
-            # 添加不足的数量
-            if current_count < target_count:
-                for i in range(current_count, target_count):
-                    new_attr = obj.data.color_attributes.new(
-                        name=f"COLOR{i}" if i > 0 else "COLOR",
-                        type='BYTE_COLOR',
-                        domain='CORNER'
-                    )
-                    added_attrs += 1
-            
-            # 重命名所有颜色属性
-            color_attrs = [attr for attr in obj.data.color_attributes 
-                         if attr.domain == 'CORNER' and attr.data_type == 'BYTE_COLOR']
-            color_attrs.sort(key=lambda x: x.name)
-            
-            for i, attr in enumerate(color_attrs):
-                new_name = f"COLOR{i}" if i > 0 else "COLOR"
-                if attr.name != new_name:
-                    attr.name = new_name
-                    renamed_attrs += 1
-        
-        self.report({'INFO'}, 
-                   f"处理完成: {processed_objects}个物体, 添加{added_attrs}个, 重命名{renamed_attrs}个")
-        return {'FINISHED'}
 
 class O_SetActiveColorAttributes(bpy.types.Operator):
     bl_idname = "xqfa.color_attr_set_active"
     bl_label = "活动"
-    bl_description = "将所有选中物体的活动顶点色层设置为指定索引"
+    bl_description = "将所有选中物体的活动颜色属性设置为指定索引（包含所有类型）"
     
     def execute(self, context):
         scene = context.scene
@@ -139,18 +87,25 @@ class O_SetActiveColorAttributes(bpy.types.Operator):
                 continue
                 
             processed_objects += 1
-            # 获取顶点色层列表
-            vertex_colors = obj.data.vertex_colors
             
-            if target_index < 0 or target_index >= len(vertex_colors):
-                self.report({'WARNING'}, f"物体 {obj.name} 的顶点色索引 {target_index} 超出范围")
+            # 使用 color_attributes 获取所有类型的颜色属性
+            color_attrs = obj.data.color_attributes
+            
+            if target_index < 0 or target_index >= len(color_attrs):
+                self.report({'WARNING'}, f"物体 {obj.name} 的颜色属性索引 {target_index} 超出范围")
                 continue
-                
-            vertex_colors.active = vertex_colors[target_index]
+
+            color_attrs.active_color_index = target_index
+            
+            
+            
             set_active_count += 1
         
-        self.report({'INFO'}, 
-                   f"处理完成: {processed_objects}个物体, 设置了{set_active_count}个活动顶点色层")
+        # 强制刷新所有区域
+        for area in context.screen.areas:
+            area.tag_redraw()
+            
+        self.report({'INFO'}, f"完成: {processed_objects}个物体, 设置了{set_active_count}个活动颜色属性")
         return {'FINISHED'}
 
 class O_SetRenderColorAttributes(bpy.types.Operator):
@@ -170,28 +125,27 @@ class O_SetRenderColorAttributes(bpy.types.Operator):
                 continue
                 
             processed_objects += 1
-            vertex_colors = obj.data.vertex_colors
+            color_attrs = obj.data.color_attributes
             
-            if target_index < 0 or target_index >= len(vertex_colors):
+            if target_index < 0 or target_index >= len(color_attrs):
                 self.report({'WARNING'}, f"物体 {obj.name} 的顶点色索引 {target_index} 超出范围")
                 continue
                 
-            # 设置指定索引的顶点色层为渲染层
-            vertex_colors[target_index].active_render = True
-            # 确保其他顶点色层不激活渲染
-            for i, vcol in enumerate(vertex_colors):
-                if i != target_index:
-                    vcol.active_render = False
+            color_attrs.render_color_index = target_index
+
             set_render_count += 1
         
-        self.report({'INFO'}, 
-                   f"处理完成: {processed_objects}个物体, 设置了{set_render_count}个渲染顶点色层")
+        # 强制刷新所有区域
+        for area in context.screen.areas:
+            area.tag_redraw()
+        self.report({'INFO'}, f"处理完成: {processed_objects}个物体, 设置了{set_render_count}个渲染顶点色层")
         return {'FINISHED'}
 
 class O_RemoveColorAttributes(bpy.types.Operator):
     bl_idname = "xqfa.color_attr_remove"
     bl_label = "删除"
-    bl_description = "删除指定索引的顶点色层"
+    bl_description = "删除指定索引的顶点色层 (支持所有颜色属性类型)"
+    bl_options = {'REGISTER', 'UNDO'}
     
     def execute(self, context):
         scene = context.scene
@@ -205,28 +159,135 @@ class O_RemoveColorAttributes(bpy.types.Operator):
                 continue
                 
             processed_objects += 1
-            vertex_colors = obj.data.vertex_colors
+            # 使用 color_attributes 获取所有类型的颜色属性，参考 O_SetActiveColorAttributes
+            color_attrs = obj.data.color_attributes
             
-            if target_index < 0 or target_index >= len(vertex_colors):
-                self.report({'WARNING'}, f"物体 {obj.name} 的顶点色索引 {target_index} 超出范围")
+            if target_index < 0 or target_index >= len(color_attrs):
+                self.report({'WARNING'}, f"物体 {obj.name} 的索引 {target_index} 超出范围")
                 continue
-                
-            # 删除指定索引的顶点色层
-            color_to_remove = vertex_colors[target_index]
-            vertex_colors.remove(color_to_remove)
+            
+            # 获取目标属性对象
+            attr_to_remove = color_attrs[target_index]
+            attr_name = attr_to_remove.name
+            
+            # 执行删除
+            color_attrs.remove(attr_to_remove)
             removed_colors += 1
             
-            # 确保活动顶点色层有效
-            if len(vertex_colors) > 0:
-                if vertex_colors.active is None:
-                    vertex_colors.active = vertex_colors[0]
-                # 确保至少有一个渲染顶点色层
-                if not any(vcol.active_render for vcol in vertex_colors):
-                    vertex_colors[0].active_render = True
-        
-        self.report({'INFO'}, 
-                   f"处理完成: {processed_objects}个物体, 删除了{removed_colors}个顶点色层")
+        # 强制刷新所有区域
+        for area in context.screen.areas:
+            area.tag_redraw()
+        context.view_layer.update()
+        self.report({'INFO'}, f"处理完成: {processed_objects}个物体, 删除了索引为 {target_index} 的属性层")
         return {'FINISHED'}
+
+class O_AddAndRenameColorAttributes(bpy.types.Operator):
+    bl_idname = "xqfa.color_attr_add_rename"
+    bl_label = "添加并重命名序列"
+    bl_description = "确保顶点色层数足够，并统一重命名为 COLOR, COLOR1, COLOR2..."
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        scene = context.scene
+        target_index = scene.color_attr_target_index
+        processed_objects = 0
+
+        for obj in context.selected_objects:
+            if obj.type != 'MESH':
+                continue
+            processed_objects += 1
+            mesh = obj.data
+            
+            # 1. 如果层数不足，添加新层 (默认使用字节颜色和面角)
+            current_count = len(mesh.color_attributes)
+            if current_count < target_index + 1:
+                for j in range(current_count, target_index + 1):
+                    mesh.color_attributes.new(
+                        name="TEMP",
+                        type='BYTE_COLOR',
+                        domain='CORNER'
+                    )
+
+            # 4. 统一重命名
+            # 先重命名数字，避免重名
+            for k, attr in enumerate(mesh.color_attributes):
+                new_name = f"{k}"
+                attr.name = new_name
+            for k, attr in enumerate(mesh.color_attributes):
+                new_name = f"COLOR{k}" if k > 0 else "COLOR"
+                attr.name = new_name
+
+        
+        # 刷新 UI
+        for area in context.screen.areas:
+            area.tag_redraw()
+        context.view_layer.update()
+        self.report({'INFO'},f"完成: {processed_objects}个物体")
+        return {'FINISHED'}
+
+class O_ConvertColorAttributeType(bpy.types.Operator):
+    bl_idname = "xqfa.color_attr_convert_type"
+    bl_label = "转换属性类型"
+    bl_description = "根据名称识别并转换所有选中物体的顶点色层类型"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    domain_enum: EnumProperty(
+        name="域",
+        items=[('POINT', "顶点 (Point)", ""), ('CORNER', "面角 (Face Corner)", "")],
+        default='CORNER'
+    )
+    data_type_enum: EnumProperty(
+        name="数据类型",
+        items=[('FLOAT_COLOR', "颜色 (Linear)", ""), ('BYTE_COLOR', "字节颜色 (sRGB)", "")],
+        default='BYTE_COLOR'
+    )
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self)
+
+    def execute(self, context):
+        original_active = context.view_layer.objects.active
+        processed_objects = 0
+
+        for obj in context.selected_objects:
+            if obj.type != 'MESH':
+                continue
+            processed_objects += 1
+            context.view_layer.objects.active = obj
+            mesh = obj.data
+            
+            # 1. 预先记录所有属性的原始名称
+            attr_names = [attr.name for attr in mesh.color_attributes]
+            
+            # 2. 按名称查找并转换
+            for name in attr_names:
+                # 重新在当前的 color_attributes 中查找该名称对应的索引
+                # 因为转换过程中索引可能会发生变动，所以每次循环都重新获取索引
+                idx = mesh.color_attributes.find(name)
+                
+                if idx != -1:
+                    # 获取属性对象进行判断
+                    attr = mesh.color_attributes[idx]
+                    
+                    # 如果类型和域已经符合要求，则跳过
+                    if attr.domain == self.domain_enum and attr.data_type == self.data_type_enum:
+                        continue
+                    
+                    # 关键修改：显式指定 active_color_index
+                    mesh.color_attributes.active_color_index = idx
+                    
+                    # 执行转换
+                    bpy.ops.geometry.color_attribute_convert(
+                        domain=self.domain_enum, 
+                        data_type=self.data_type_enum
+                    )
+
+        context.view_layer.objects.active = original_active
+        for area in context.screen.areas:
+            area.tag_redraw()
+        context.view_layer.update()
+        self.report({'INFO'}, f"类型转换完成: {processed_objects}个物体")
+        return {'FINISHED'}    
 
 
 # 调色板操作
@@ -316,32 +377,31 @@ class O_ApplyColor(bpy.types.Operator):
             bm.free()
             applied_count += 1
         
-        # 更新依赖图（确保所有相关数据更新）
-        bpy.context.view_layer.update()
+        for area in context.screen.areas:
+            area.tag_redraw()
+        context.view_layer.update()
         
         self.report({'INFO'}, 
                    f"颜色 '{color_item.name}' 应用到 {applied_count}/{processed_objects} 个物体的活动顶点色层")
         return {'FINISHED'}
 
+classes = (
+    PaletteColorItem,
+    DATA_PT_color_attribute_tools,
+    O_SetActiveColorAttributes,
+    O_SetRenderColorAttributes,
+    O_RemoveColorAttributes,
+    O_AddAndRenameColorAttributes,
+    O_ConvertColorAttributeType,
+    O_AddColor,
+    O_RemoveColor,
+    O_ApplyColor
+)
+
 def register():
-    bpy.utils.register_class(PaletteColorItem)
-    bpy.utils.register_class(DATA_PT_color_attribute_tools)
-    bpy.utils.register_class(O_AddRenameColorAttributes)
-    bpy.utils.register_class(O_SetActiveColorAttributes)
-    bpy.utils.register_class(O_SetRenderColorAttributes)
-    bpy.utils.register_class(O_RemoveColorAttributes)
-    bpy.utils.register_class(O_AddColor)
-    bpy.utils.register_class(O_RemoveColor)
-    bpy.utils.register_class(O_ApplyColor)
+    for cls in classes:
+        bpy.utils.register_class(cls)
     
-    # 场景属性
-    bpy.types.Scene.color_attr_add_count = IntProperty(
-        name="目标数量",
-        description="要达到的颜色属性数量",
-        default=1,
-        min=1,
-        max=32
-    )
 
     bpy.types.Scene.color_attr_target_index = IntProperty(
         name="目标顶点色索引",
@@ -376,16 +436,8 @@ def register():
 
 
 def unregister():
-    bpy.utils.unregister_class(PaletteColorItem)
-    bpy.utils.unregister_class(DATA_PT_color_attribute_tools)
-    bpy.utils.unregister_class(O_AddRenameColorAttributes)
-    bpy.utils.unregister_class(O_SetActiveColorAttributes)
-    bpy.utils.unregister_class(O_SetRenderColorAttributes)
-    bpy.utils.unregister_class(O_RemoveColorAttributes)
-    bpy.utils.unregister_class(O_AddColor)
-    bpy.utils.unregister_class(O_RemoveColor)
-    bpy.utils.unregister_class(O_ApplyColor)
-    
-    del bpy.types.Scene.color_attr_add_count
+    for cls in reversed(classes):
+        bpy.utils.unregister_class(cls)
+
     del bpy.types.Scene.color_attr_target_index
     del bpy.types.Scene.palette_colors

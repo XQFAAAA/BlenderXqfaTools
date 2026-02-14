@@ -124,11 +124,6 @@ class BatchBakeProperties(bpy.types.PropertyGroup):
     show_packing: bpy.props.BoolProperty(name="展开通道打包", default=True)
     show_settings: bpy.props.BoolProperty(name="展开导出设置", default=True)
 
-    keep_only_packed: bpy.props.BoolProperty(
-        name="仅保留通道打包", 
-        description="所有操作结束后，删除物理磁盘上的原始单项烘焙图片",
-        default=True
-    )
     clean_blender_images: bpy.props.BoolProperty(
         name="清理Blender烘焙结果", 
         description="所有操作结束后，从Blender内存中移除生成的图像对象",
@@ -337,7 +332,8 @@ class M_OT_BatchBakeModal(bpy.types.Operator):
                     cmd = [
                         texconv_bin,
                         "-f", pack_cfg.export_format,
-                        "-y", 
+                        "-y",
+                        "-srgb",
                         "-o", self._export_dir
                     ]
                     
@@ -365,22 +361,13 @@ class M_OT_BatchBakeModal(bpy.types.Operator):
 
     def finish(self, context):
         props = context.scene.batch_bake_props
-        # 1. 执行打包逻辑
-        self.process_packing(context)
+        # --- 修改点：根据 UI 展开状态决定是否打包 ---
+        if props.show_packing:
+            self.report({'INFO'}, "正在执行通道打包...")
+            self.process_packing(context)
+        else:
+            self.report({'INFO'}, "通道打包面板已折叠，跳过打包步骤。")
         
-        # 2. 逻辑：仅保留通道打包 (删除磁盘上的原始烘焙图)
-        if props.keep_only_packed:
-            for item_name in [i.name for i in props.output_items if i.selected]:
-                # 修改：使用与 run_next_bake 相同的规则重建文件名
-                name = props.naming_rule.format(
-                    node=props.target_group,
-                    output=item_name,
-                    pack="",
-                    pack_format=""
-                )
-                target_file = os.path.join(self._export_dir, f"{bpy.path.clean_name(name)}.png")
-                if os.path.exists(target_file):
-                    os.remove(target_file)
 
         # 3. 逻辑：清理 Blender 内存结果
         if props.clean_blender_images:
@@ -473,7 +460,8 @@ class M_PT_BatchBakePanel(bpy.types.Panel):
         box = layout.box()
         row = box.row(align=True)
         icon = 'TRIA_DOWN' if props.show_packing else 'TRIA_RIGHT'
-        row.prop(props, "show_packing", text="通道打包", icon=icon, emboss=False)
+        text0 = '通道打包 (启用)' if props.show_packing else '通道打包 (关闭)'
+        row.prop(props, "show_packing", text=text0, icon=icon, emboss=False)
         
         if props.show_packing:
             row = box.row()
@@ -511,8 +499,7 @@ class M_PT_BatchBakePanel(bpy.types.Panel):
             col.prop(props, "naming_rule")
             col.prop(props, "export_path")
             row = col.row(align=True)
-            row.prop(props, "keep_only_packed", toggle=True, icon='TRASH')
-            row.prop(props, "clean_blender_images", toggle=True, icon='X')
+            row.prop(props, "clean_blender_images", toggle=True, icon='TRASH')
         
         
         layout.operator("object.batch_bake_modal", icon='RENDER_STILL', text="开始烘焙并打包")

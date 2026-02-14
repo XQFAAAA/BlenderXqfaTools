@@ -39,6 +39,7 @@ class XQFA_PT_Demo(bpy.types.Panel):
         col.operator(XQFA_OT_MiniPlane.bl_idname, icon="MESH_CUBE")
         col.operator(XQFA_OT_RenameComponents.bl_idname, icon="OUTLINER_OB_EMPTY")
         col.operator(XQFA_OT_OctahedralUV.bl_idname, icon='UV')
+        col.operator(XQFA_OT_SplitKeepNormals.bl_idname, icon="MOD_NORMALEDIT", text="拆分并保持法线 (Y)")
 
         row = col.row(align=True)
         row.prop(context.scene, "sk_source_mesh", text = "", icon="MESH_DATA")
@@ -607,7 +608,70 @@ class XQFA_OT_OctahedralUV(bpy.types.Operator):
         
         return True
 
-# --- 注册/注销逻辑 ---
+class XQFA_OT_SplitKeepNormals(bpy.types.Operator):
+    bl_idname = "xqfa.split_keep_normals"
+    bl_label = "拆分并保持法线"
+    bl_description = "步骤：备份->拆分->传递法线->清理，确保拆分处视觉平滑"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        # 确保在编辑模式且有活动的网格物体
+        return (context.active_object is not None and 
+                context.active_object.type == 'MESH' and 
+                context.mode == 'EDIT_MESH')
+
+    def execute(self, context):
+        # 获取当前活动的 A 物体
+        obj_a = context.active_object
+        mesh_a = obj_a.data
+
+        # --- 1. 切换到物体模式，复制一份物体为 A.001 ---
+        bpy.ops.object.mode_set(mode='OBJECT')
+        obj_backup = obj_a.copy()
+        obj_backup.data = obj_a.data.copy()
+        obj_backup.name = obj_a.name + ".001"
+        context.collection.objects.link(obj_backup)
+        # 隐藏备份物体避免干扰
+        obj_backup.hide_viewport = True
+
+        # --- 2. 进入 A 的编辑模式，执行拆分 ---
+        context.view_layer.objects.active = obj_a
+        bpy.ops.object.mode_set(mode='EDIT')
+        # Blender 会保留之前的面选中状态，直接拆分
+        bpy.ops.mesh.split()
+
+        # --- 3. 切换到物体模式，添加并应用数据传递修改器 ---
+        bpy.ops.object.mode_set(mode='OBJECT')
+        
+        # 确保 A 物体启用了自定义法线所需的基础设置
+        if bpy.app.version < (4, 1, 0):
+            mesh_a.use_auto_smooth = True
+        
+        # 添加修改器
+        transfer_mod = obj_a.modifiers.new(name="XQFA_Normal_Transfer", type='DATA_TRANSFER')
+        transfer_mod.object = obj_backup
+        
+        # 设置：面拐数据 -> 自定义法向
+        transfer_mod.use_loop_data = True
+        transfer_mod.data_types_loops = {'CUSTOM_NORMAL'}
+        
+        # 设置：选择最近面的最近拐角 (NEAREST_POLYNOR)
+        transfer_mod.loop_mapping = 'NEAREST_POLYNOR'
+        
+        # 应用修改器
+        bpy.ops.object.modifier_apply(modifier=transfer_mod.name)
+
+        # --- 4. 删除 A.001 ---
+        backup_mesh = obj_backup.data
+        bpy.data.objects.remove(obj_backup, do_unlink=True)
+        bpy.data.meshes.remove(backup_mesh)
+
+        # --- 5. 进入 A 的编辑模式 ---
+        bpy.ops.object.mode_set(mode='EDIT')
+
+        self.report({'INFO'}, "已完成：法线已通过备份还原")
+        return {'FINISHED'}
 
 classes = (
     XQFA_PT_Demo,
@@ -616,6 +680,7 @@ classes = (
     XQFA_OT_RenameComponents,
     XQFA_OT_ApplyAsShapekey,
     XQFA_OT_OctahedralUV,
+    XQFA_OT_SplitKeepNormals,
 )
 
 def register():

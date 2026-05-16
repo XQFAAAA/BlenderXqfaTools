@@ -15,7 +15,7 @@ bl_info = {
 ########################## Divider ##########################
 from . import panel
 from .骨骼工具 import 骨骼与顶点组, 骨骼姿态操作, 骨骼编辑操作, MOD骨架替换
-from .属性工具 import 顶点组, 形态键, UV贴图, 顶点色
+from .属性工具 import 顶点组, 形态键, UV贴图, 顶点色, 额外物体信息
 from .其他工具 import 其他, 材质, 烘焙节点组
 
 class XqfaPreferences(bpy.types.AddonPreferences):
@@ -54,6 +54,7 @@ def register():
     形态键.register()
     UV贴图.register()
     顶点色.register()
+    额外物体信息.register()
     其他.register()
     材质.register()
     烘焙节点组.register()
@@ -70,6 +71,7 @@ def unregister():
     形态键.unregister()
     UV贴图.unregister()
     顶点色.unregister()
+    额外物体信息.unregister()
     其他.unregister()
     材质.unregister()
     烘焙节点组.unregister()

@@ -24,6 +24,10 @@ class DATA_PT_shape_key_tools(bpy.types.Panel):
         row = col.row(align=True)
         row.operator(O_ShapeKeysSortMatch.bl_idname, text=O_ShapeKeysSortMatch.bl_label, icon="SORTSIZE")
         row.operator(O_ShapeKeysRenameByOrder.bl_idname, text=O_ShapeKeysRenameByOrder.bl_label, icon="SORTALPHA")
+        col.separator()
+        row = col.row(align=True)
+        row.prop(context.scene, "shape_key_select_threshold", text='')
+        row.operator(O_ShapeKeysSelectAffectedVertices.bl_idname, text=O_ShapeKeysSelectAffectedVertices.bl_label, icon="VERTEXSEL")
 
 class O_ShapeKeysMatchRename(bpy.types.Operator):
     bl_idname = "xqfa.shape_keys_match_rename"
@@ -434,12 +438,101 @@ class O_ShapeKeysRenameByOrder(bpy.types.Operator):
             'kept': kept_count
         }
 
+class O_ShapeKeysSelectAffectedVertices(bpy.types.Operator):
+    bl_idname = "xqfa.shape_keys_select_affected_vertices"
+    bl_label = "选中影响顶点"
+    bl_description = ("选中当前形态键影响的顶点\n"
+                     "选中与基础形态键位置有差异的顶点")
+    
+    def execute(self, context):
+        try:
+            obj = context.active_object
+            
+            if not obj or obj.type != 'MESH':
+                self.report({'ERROR'}, "请选择一个网格物体")
+                return {'CANCELLED'}
+            
+            if not obj.data.shape_keys:
+                self.report({'ERROR'}, "物体没有形态键")
+                return {'CANCELLED'}
+            
+            if not obj.data.shape_keys.use_relative:
+                self.report({'ERROR'}, "仅支持相对形态键")
+                return {'CANCELLED'}
+            
+            current_sk = obj.active_shape_key
+            if not current_sk:
+                self.report({'ERROR'}, "没有激活的形态键")
+                return {'CANCELLED'}
+            
+            if current_sk == current_sk.relative_key:
+                self.report({'ERROR'}, "当前是基础形态键，请选择其他形态键")
+                return {'CANCELLED'}
+            
+            threshold = context.scene.shape_key_select_threshold
+            result = self._select_affected_vertices(obj, current_sk, threshold)
+            
+            self.report({'INFO'}, f"已选中 {result['count']} 个顶点")
+            return {'FINISHED'}
+            
+        except Exception as e:
+            self.report({'ERROR'}, str(e))
+            return {'CANCELLED'}
+    
+    def _select_affected_vertices(self, obj, shape_key, threshold):
+        """选中与基础形态键有差异的顶点"""
+        mesh = obj.data
+        shape_keys = mesh.shape_keys
+        base_key = shape_key.relative_key
+        
+        # 获取顶点总数
+        total_verts = len(mesh.vertices)
+        
+        # 获取基础形态键顶点坐标
+        base_coords = np.zeros(total_verts * 3)
+        base_key.data.foreach_get('co', base_coords)
+        base_coords = base_coords.reshape(-1, 3)
+        
+        # 获取当前形态键顶点坐标
+        sk_coords = np.zeros(total_verts * 3)
+        shape_key.data.foreach_get('co', sk_coords)
+        sk_coords = sk_coords.reshape(-1, 3)
+        
+        # 计算差异距离
+        diffs = np.linalg.norm(sk_coords - base_coords, axis=1)
+        
+        # 切换到编辑模式（如果还没在）
+        if obj.mode != 'EDIT':
+            bpy.ops.object.mode_set(mode='EDIT')
+        
+        # 首先取消所有选择
+        bpy.ops.mesh.select_all(action='DESELECT')
+        
+        # 切换回对象模式来设置顶点选择
+        bpy.ops.object.mode_set(mode='OBJECT')
+        
+        # 选中有差异的顶点
+        affected_count = 0
+        for i, diff in enumerate(diffs):
+            if diff > threshold:
+                mesh.vertices[i].select = True
+                affected_count += 1
+        
+        # 回到编辑模式
+        bpy.ops.object.mode_set(mode='EDIT')
+        
+        return {
+            'count': affected_count,
+            'total': total_verts
+        }
+
 
 def register():
     bpy.utils.register_class(DATA_PT_shape_key_tools)
     bpy.utils.register_class(O_ShapeKeysMatchRename)
     bpy.utils.register_class(O_ShapeKeysSortMatch)
     bpy.utils.register_class(O_ShapeKeysRenameByOrder)
+    bpy.utils.register_class(O_ShapeKeysSelectAffectedVertices)
 
     bpy.types.Scene.shape_key_similarity_threshold = bpy.props.FloatProperty(
         name="相似度",
@@ -450,11 +543,22 @@ def register():
         step=0.01,
         precision=3
     )
+    
+    bpy.types.Scene.shape_key_select_threshold = bpy.props.FloatProperty(
+        name="阈值",
+        description="顶点位置差异的最小阈值（米）",
+        default=0.0001,
+        min=0.0,
+        step=0.0001,
+        precision=5
+    )
 
 def unregister():
     bpy.utils.unregister_class(DATA_PT_shape_key_tools)
     bpy.utils.unregister_class(O_ShapeKeysMatchRename)
     bpy.utils.unregister_class(O_ShapeKeysSortMatch)
     bpy.utils.unregister_class(O_ShapeKeysRenameByOrder)
-
+    bpy.utils.unregister_class(O_ShapeKeysSelectAffectedVertices)
+    
     del bpy.types.Scene.shape_key_similarity_threshold
+    del bpy.types.Scene.shape_key_select_threshold

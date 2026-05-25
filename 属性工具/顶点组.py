@@ -27,13 +27,8 @@ class DATA_PT_vertex_group_tools(bpy.types.Panel):
         })
         
         col = layout.column(align=True)
-        # 物体额外信息开关
-        row = col.row(align=True)
-        row.prop(context.scene, "show_extra_object_info", text="显示物体额外信息", icon='INFO')
-        
         row = col.row(align=True)
         row.operator(O_VertexGroupsCount.bl_idname, text=f"统计：{stats['total']} | {stats['with_weight']} | {stats['zero_weight']}", icon="GROUP_VERTEX")
-
 
         row = col.row(align=True)
         row.operator(O_VertexGroupsDelNoneActive.bl_idname, text=O_VertexGroupsDelNoneActive.bl_label, icon="GROUP_VERTEX")

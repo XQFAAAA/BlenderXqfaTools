@@ -39,6 +39,11 @@ class XQFA_PT_Demo(bpy.types.Panel):
         col.operator(XQFA_OT_MiniPlane.bl_idname, icon="MESH_CUBE")
         col.operator(XQFA_OT_RenameComponents.bl_idname, icon="OUTLINER_OB_EMPTY")
         col.operator(XQFA_OT_OctahedralUV.bl_idname, icon='UV')
+        col.operator(XQFA_OT_SelectWithChildren.bl_idname, icon='RESTRICT_SELECT_OFF')
+        col.separator()
+        col.operator(XQFA_OT_SelectMoreThan4.bl_idname, icon='CON_KINEMATIC')
+        col.operator(XQFA_OT_SelectLessThan4.bl_idname, icon='CON_KINEMATIC')
+        col.operator(XQFA_OT_UndoTriSubdivide.bl_idname, icon='MESH_DATA')
 
         row = col.row(align=True)
         row.prop(context.scene, "sk_source_mesh", text = "", icon="MESH_DATA")
@@ -607,6 +612,223 @@ class XQFA_OT_OctahedralUV(bpy.types.Operator):
         
         return True
 
+
+class XQFA_OT_SelectMoreThan4(bpy.types.Operator):
+    bl_idname = "xqfa.select_more_than_4"
+    bl_label = "选择连线>4的顶点"
+    bl_description = "在编辑模式中，从选中顶点里选出连线数大于4的顶点"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    include_boundary: bpy.props.BoolProperty(
+        name="包括边界点",
+        description="是否包括边界顶点",
+        default=True
+    )
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        return obj is not None and obj.type == 'MESH' and obj.mode == 'EDIT'
+
+    def execute(self, context):
+        import bmesh
+        obj = context.active_object
+        bm = bmesh.from_edit_mesh(obj.data)
+
+        selected_verts = [v for v in bm.verts if v.select]
+        if not selected_verts:
+            self.report({'WARNING'}, "没有选中的顶点")
+            return {'CANCELLED'}
+
+        count = 0
+        for v in selected_verts:
+            is_boundary = any(e.is_boundary for e in v.link_edges)
+            if len(v.link_edges) > 4:
+                if self.include_boundary or not is_boundary:
+                    v.select = True
+                    count += 1
+                else:
+                    v.select = False
+            else:
+                v.select = False
+
+        bmesh.update_edit_mesh(obj.data)
+        self.report({'INFO'}, f"已选择 {count} 个连线>4的顶点")
+        return {'FINISHED'}
+
+
+class XQFA_OT_SelectLessThan4(bpy.types.Operator):
+    bl_idname = "xqfa.select_less_than_4"
+    bl_label = "选择连线<4的顶点"
+    bl_description = "在编辑模式中，从选中顶点里选出连线数小于4的顶点"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    include_boundary: bpy.props.BoolProperty(
+        name="包括边界点",
+        description="是否包括边界顶点",
+        default=True
+    )
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        return obj is not None and obj.type == 'MESH' and obj.mode == 'EDIT'
+
+    def execute(self, context):
+        import bmesh
+        obj = context.active_object
+        bm = bmesh.from_edit_mesh(obj.data)
+
+        selected_verts = [v for v in bm.verts if v.select]
+        if not selected_verts:
+            self.report({'WARNING'}, "没有选中的顶点")
+            return {'CANCELLED'}
+
+        count = 0
+        for v in selected_verts:
+            is_boundary = any(e.is_boundary for e in v.link_edges)
+            if len(v.link_edges) < 4:
+                if self.include_boundary or not is_boundary:
+                    v.select = True
+                    count += 1
+                else:
+                    v.select = False
+            else:
+                v.select = False
+
+        bmesh.update_edit_mesh(obj.data)
+        self.report({'INFO'}, f"已选择 {count} 个连线<4的顶点")
+        return {'FINISHED'}
+
+
+class XQFA_OT_UndoTriSubdivide(bpy.types.Operator):
+    bl_idname = "xqfa.undo_tri_subdivide"
+    bl_label = "还原三角面中点细分"
+    bl_description = ("还原三角面中点细分为四边面的操作：\n"
+                      "1. 选择非边界的连线=3的顶点（三角面中心）\n"
+                      "2. 选择与这些点相连的顶点（各边中点）\n"
+                      "3. 融并这些顶点之间的边")
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        return obj is not None and obj.type == 'MESH' and obj.mode == 'EDIT'
+
+    def execute(self, context):
+        import bmesh
+        obj = context.active_object
+        bm = bmesh.from_edit_mesh(obj.data)
+
+        center_verts = set()
+        for v in bm.verts:
+            if len(v.link_edges) == 3:
+                is_boundary = any(e.is_boundary for e in v.link_edges)
+                if not is_boundary:
+                    center_verts.add(v)
+
+        if not center_verts:
+            self.report({'WARNING'}, "没有找到非边界且连线=3的顶点")
+            return {'CANCELLED'}
+
+        midpoint_verts = set()
+        for cv in center_verts:
+            for e in cv.link_edges:
+                midpoint_verts.add(e.other_vert(cv))
+
+        all_subdiv_verts = center_verts | midpoint_verts
+        edges_to_dissolve = set()
+        for v in all_subdiv_verts:
+            for e in v.link_edges:
+                other = e.other_vert(v)
+                if other in all_subdiv_verts:
+                    edges_to_dissolve.add(e)
+
+        bmesh.ops.dissolve_edges(bm, edges=list(edges_to_dissolve), use_verts=True)
+
+        bmesh.update_edit_mesh(obj.data)
+        self.report({'INFO'}, f"已还原 {len(center_verts)} 个三角面的细分")
+        return {'FINISHED'}
+
+
+class XQFA_OT_SelectWithChildren(bpy.types.Operator):
+    """选择选中对象及其所有子级（包括隐藏的）"""
+    bl_idname = "xqfa.select_with_children"
+    bl_label = "选择对象及全部子级"
+    bl_description = "选择选中对象及其所有子级对象（包括子级的子级，即使隐藏也能选择）"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    @classmethod
+    def poll(cls, context):
+        """检查是否有选中的对象"""
+        return context.selected_objects is not None and len(context.selected_objects) > 0
+    
+    def get_all_children(self, obj):
+        """递归获取所有子级对象"""
+        all_children = []
+        
+        def collect_children(parent):
+            for child in parent.children:
+                all_children.append(child)
+                collect_children(child)
+        
+        collect_children(obj)
+        return all_children
+    
+    def execute(self, context):
+        """执行选择操作"""
+        selected_objects = list(context.selected_objects)
+        
+        if not selected_objects:
+            self.report({'WARNING'}, "未选择任何对象")
+            return {'CANCELLED'}
+        
+        # 收集所有要选择的对象（包括选中对象和它们的所有子级）
+        objects_to_select = []
+        for obj in selected_objects:
+            objects_to_select.append(obj)
+            objects_to_select.extend(self.get_all_children(obj))
+        
+        # 保存原始模式
+        original_mode = None
+        if context.active_object:
+            original_mode = context.active_object.mode
+        
+        # 切换到对象模式
+        if original_mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        
+        # 取消所有选择
+        bpy.ops.object.select_all(action='DESELECT')
+        
+        # 选择并显示所有要选择的对象
+        select_count = 0
+        for obj in objects_to_select:
+            # 确保对象在场景中且可以被选择
+            if obj and obj.name in bpy.data.objects:
+                try:
+                    # 显示对象（取消隐藏）
+                    obj.hide_set(False)
+                    obj.hide_viewport = False
+                    obj.hide_render = False
+                    # 选择对象
+                    obj.select_set(True)
+                    select_count += 1
+                except:
+                    pass
+        
+        # 设置活动对象为第一个选中的对象
+        if select_count > 0:
+            for obj in objects_to_select:
+                if obj and obj.name in bpy.data.objects:
+                    context.view_layer.objects.active = obj
+                    break
+            self.report({'INFO'}, f"已选择 {select_count} 个对象")
+            return {'FINISHED'}
+        else:
+            self.report({'WARNING'}, "没有找到可选择的对象")
+            return {'CANCELLED'}
+
 classes = (
     XQFA_PT_Demo,
     XQFA_OT_NumberToBone,
@@ -614,6 +836,10 @@ classes = (
     XQFA_OT_RenameComponents,
     XQFA_OT_ApplyAsShapekey,
     XQFA_OT_OctahedralUV,
+    XQFA_OT_SelectWithChildren,
+    XQFA_OT_SelectMoreThan4,
+    XQFA_OT_SelectLessThan4,
+    XQFA_OT_UndoTriSubdivide,
 )
 
 def register():

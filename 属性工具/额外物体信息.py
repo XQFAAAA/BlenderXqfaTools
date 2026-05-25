@@ -1,92 +1,167 @@
 # type: ignore
 import bpy
 import blf
+import bmesh
+from bpy_extras.view3d_utils import location_3d_to_region_2d
 
 # 绘制处理器
 _draw_handle = None
 
 def draw_shape_key_overlay(context):
     # 检查是否启用物体额外信息
-    if not hasattr(context.scene, "show_extra_object_info") or \
-       not context.scene.show_extra_object_info:
+    obj = context.active_object
+    if not obj:
         return
     
-    obj = context.active_object
+    if hasattr(context.scene, "show_extra_object_info") and context.scene.show_extra_object_info:
+        # --- 1. 绘制左下角的统计信息 (顶点组/形态键) ---
+        draw_stat_info(context, obj)
     
+    # --- 2. 绘制选中顶点的 ID (3D 锚点跟随) ---
+    if hasattr(context.scene, "show_vertex_ids") and context.scene.show_vertex_ids:
+        if obj.mode == 'EDIT' and obj.type == 'MESH':
+            draw_vertex_ids(context, obj)
+
+def draw_stat_info(context, obj):
+    """绘制左下角的基础信息统计"""
     # 获取顶点组信息
     vertex_group_count = 0
     current_vertex_group = "无"
-    if obj and obj.vertex_groups:
+    if obj.vertex_groups:
         vertex_group_count = len(obj.vertex_groups)
-        # 直接尝试获取激活的顶点组
-        try:
-            # 在Blender中，通常active_vertex_group就在vertex_groups上
-            if vertex_group_count > 0:
-                # 尝试几种方式获取
-                if hasattr(obj.vertex_groups, 'active'):
-                    current_vertex_group = obj.vertex_groups.active.name
-                elif hasattr(obj, 'active_vertex_group_index'):
-                    idx = obj.active_vertex_group_index
-                    if idx >= 0 and idx < vertex_group_count:
-                        current_vertex_group = obj.vertex_groups[idx].name
-                elif hasattr(obj.vertex_groups, 'active_index'):
-                    idx = obj.vertex_groups.active_index
-                    if idx >= 0 and idx < vertex_group_count:
-                        current_vertex_group = obj.vertex_groups[idx].name
-        except:
-            current_vertex_group = "无"
+        idx = obj.vertex_groups.active_index
+        if 0 <= idx < vertex_group_count:
+            current_vertex_group = obj.vertex_groups[idx].name
+    
     vg_text = f"顶点组: {current_vertex_group} / {vertex_group_count}"
     
     # 获取形态键信息
     shape_key_count = 0
-    current_shape_key = ""
-    if obj and obj.type == 'MESH' and obj.data.shape_keys:
+    current_shape_key = "无"
+    if obj.type == 'MESH' and obj.data.shape_keys:
         shape_keys = obj.data.shape_keys
         shape_key_count = len(shape_keys.key_blocks)
         active_index = obj.active_shape_key_index
-        if active_index >= 0 and active_index < shape_key_count:
+        if 0 <= active_index < shape_key_count:
             current_shape_key = shape_keys.key_blocks[active_index].name
-        else:
-            current_shape_key = "无"
-    else:
-        current_shape_key = "无"
+    
     sk_text = f"形态键: {current_shape_key} / {shape_key_count}"
     
-    # 绘制文本 - 位置在左下角
     font_id = 0
     blf.size(font_id, 12)
+    blf.color(font_id, 1.0, 1.0, 1.0, 1.0)
     
-    # 计算位置
+    # 绘制形态键 (靠下)
+    blf.position(font_id, 50, 30, 0)
+    blf.draw(font_id, sk_text)
+    
+    # 绘制顶点组 (靠上一点)
+    blf.position(font_id, 50, 50, 0)
+    blf.draw(font_id, vg_text)
+
+def draw_vertex_ids(context, obj):
+    """在 3D 视图中顶点位置绘制 ID"""
+    bm = bmesh.from_edit_mesh(obj.data)
+    
+    font_id = 0
+    blf.size(font_id, 13)
+    blf.color(font_id, 0.0, 1.0, 0.8, 1.0) # 青色，方便辨认
+    
     region = context.region
-    if region:
-        # 绘制形态键（在上面）
-        sk_text_width, sk_text_height = blf.dimensions(font_id, sk_text)
-        sk_x_pos = 10
-        sk_y_pos = 30
-        blf.position(font_id, sk_x_pos, sk_y_pos, 0)
-        blf.color(font_id, 1.0, 1.0, 1.0, 1.0)
-        blf.draw(font_id, sk_text)
+    rv3d = context.region_data
+    matrix_world = obj.matrix_world
+
+    # 只处理选中的顶点
+    selected_verts = [v for v in bm.verts if v.select]
+    
+    for v in selected_verts:
+        # 将顶点的局部坐标转换为世界坐标
+        world_pos = matrix_world @ v.co
+        # 将世界坐标转换为屏幕 2D 坐标
+        screen_pos = location_3d_to_region_2d(region, rv3d, world_pos)
         
-        # 绘制顶点组（在下面）
-        vg_text_width, vg_text_height = blf.dimensions(font_id, vg_text)
-        vg_x_pos = 10
-        vg_y_pos = 50
-        blf.position(font_id, vg_x_pos, vg_y_pos, 0)
-        blf.color(font_id, 1.0, 1.0, 1.0, 1.0)
-        blf.draw(font_id, vg_text)
+        if screen_pos:
+            blf.position(font_id, screen_pos[0] + 5, screen_pos[1] + 5, 0)
+            blf.draw(font_id, str(v.index))
 
 def draw_callback_px():
     draw_shape_key_overlay(bpy.context)
 
-def register():
-    # 添加自定义属性到Scene
-    bpy.types.Scene.show_extra_object_info = bpy.props.BoolProperty(
-        name="物体额外信息",
-        description="显示顶点组和形态键数量信息",
-        default=False
+class O_CopySelectedVertexIds(bpy.types.Operator):
+    bl_idname = "xqfa.copy_selected_vertex_ids"
+    bl_label = "复制选中顶点ID"
+    bl_description = "复制选中顶点的ID到剪贴板，支持多种格式"
+    
+    format: bpy.props.EnumProperty(
+        name="格式",
+        items=[
+            ('COMMA', "逗号分隔", ""),
+            ('NEWLINE', "换行分隔", ""),
+            ('SPACE', "空格分隔", ""),
+            ('LIST', "Python列表", ""),
+        ],
+        default='COMMA'
     )
     
-    # 添加绘制处理器
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self)
+    
+    def execute(self, context):
+        obj = context.active_object
+        if not obj or obj.type != 'MESH':
+            self.report({'ERROR'}, "请选择一个网格物体")
+            return {'CANCELLED'}
+        
+        if obj.mode == 'EDIT':
+            bm = bmesh.from_edit_mesh(obj.data)
+            selected_ids = [v.index for v in bm.verts if v.select]
+        else:
+            selected_ids = [v.index for v in obj.data.vertices if v.select]
+        
+        if not selected_ids:
+            self.report({'WARNING'}, "没有选中任何顶点")
+            return {'CANCELLED'}
+        
+        if self.format == 'COMMA':
+            text = ', '.join(map(str, selected_ids))
+        elif self.format == 'NEWLINE':
+            text = '\n'.join(map(str, selected_ids))
+        elif self.format == 'SPACE':
+            text = ' '.join(map(str, selected_ids))
+        elif self.format == 'LIST':
+            text = str(selected_ids)
+        
+        context.window_manager.clipboard = text
+        self.report({'INFO'}, f"已复制 {len(selected_ids)} 个顶点ID")
+        return {'FINISHED'}
+
+
+class DATA_PT_ExtraObjectInfoPanel(bpy.types.Panel):
+    bl_label = "额外物体信息"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'XQFA'
+
+    @classmethod
+    def poll(cls, context):
+        # 兼容原有逻辑：只有特定子面板激活时显示
+        return (getattr(context.scene, 'active_xbone_subpanel', '') == 'AttributeTools' and context.object is not None)
+
+    def draw(self, context):
+        layout = self.layout
+        col = layout.column()
+        col.prop(context.scene, "show_extra_object_info", text="显示左下角信息", icon="INFO")
+        col.prop(context.scene, "show_vertex_ids", text="显示选中顶点ID", icon="RESTRICT_SELECT_OFF")
+
+        col.operator(O_CopySelectedVertexIds.bl_idname, text="复制顶点ID", icon="COPYDOWN")
+
+def register():
+    bpy.utils.register_class(DATA_PT_ExtraObjectInfoPanel)
+    bpy.utils.register_class(O_CopySelectedVertexIds)
+    
+    bpy.types.Scene.show_extra_object_info = bpy.props.BoolProperty(name="物体额外信息", default=True)
+    bpy.types.Scene.show_vertex_ids = bpy.props.BoolProperty(name="显示选中顶点ID", default=False)
+    
     global _draw_handle
     if _draw_handle is None:
         _draw_handle = bpy.types.SpaceView3D.draw_handler_add(
@@ -94,11 +169,12 @@ def register():
         )
 
 def unregister():
-    # 移除自定义属性
-    if hasattr(bpy.types.Scene, "show_extra_object_info"):
-        del bpy.types.Scene.show_extra_object_info
+    bpy.utils.unregister_class(DATA_PT_ExtraObjectInfoPanel)
+    bpy.utils.unregister_class(O_CopySelectedVertexIds)
     
-    # 移除绘制处理器
+    del bpy.types.Scene.show_extra_object_info
+    del bpy.types.Scene.show_vertex_ids
+    
     global _draw_handle
     if _draw_handle is not None:
         bpy.types.SpaceView3D.draw_handler_remove(_draw_handle, 'WINDOW')

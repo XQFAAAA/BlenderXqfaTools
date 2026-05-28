@@ -38,11 +38,13 @@ class XQFA_PT_Demo(bpy.types.Panel):
         col.operator(XQFA_OT_NumberToBone.bl_idname, icon="ARROW_LEFTRIGHT")
         col.operator(XQFA_OT_MiniPlane.bl_idname, icon="MESH_CUBE")
         col.operator(XQFA_OT_RenameComponents.bl_idname, icon="OUTLINER_OB_EMPTY")
+        col.operator(XQFA_OT_SeparateByMaterial.bl_idname, icon="MATERIAL")
         col.operator(XQFA_OT_OctahedralUV.bl_idname, icon='UV')
         col.operator(XQFA_OT_SelectWithChildren.bl_idname, icon='RESTRICT_SELECT_OFF')
         col.separator()
         col.operator(XQFA_OT_SelectMoreThan4.bl_idname, icon='CON_KINEMATIC')
         col.operator(XQFA_OT_SelectLessThan4.bl_idname, icon='CON_KINEMATIC')
+        col.operator(XQFA_OT_SelectNegativeX.bl_idname, icon='FORWARD')
         col.operator(XQFA_OT_UndoTriSubdivide.bl_idname, icon='MESH_DATA')
 
         row = col.row(align=True)
@@ -502,6 +504,52 @@ def calc_smooth_normals(mesh):
 
 
 
+class XQFA_OT_SeparateByMaterial(bpy.types.Operator):
+    bl_idname = "xqfa.separate_by_material"
+    bl_label = "按材质分离"
+    bl_description = "按材质分离物体，分离的各个物体以{原名}_{材质名}命名"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.selected_objects is not None and any(obj.type == 'MESH' for obj in context.selected_objects)
+
+    def execute(self, context):
+        mesh_objects = [obj for obj in context.selected_objects if obj.type == 'MESH']
+        if not mesh_objects:
+            self.report({'WARNING'}, "未选中任何网格物体")
+            return {'CANCELLED'}
+
+        total_count = 0
+
+        for obj in mesh_objects:
+            if not obj.data.materials:
+                self.report({'WARNING'}, f"物体 {obj.name} 没有材质，已跳过")
+                continue
+
+            original_name = obj.name
+
+            bpy.ops.object.mode_set(mode='OBJECT')
+            bpy.ops.object.select_all(action='DESELECT')
+            obj.select_set(True)
+            context.view_layer.objects.active = obj
+
+            bpy.ops.object.mode_set(mode='EDIT')
+            bpy.ops.mesh.separate(type='MATERIAL')
+            bpy.ops.object.mode_set(mode='OBJECT')
+
+            separated_objs = context.selected_objects
+            for sep_obj in separated_objs:
+                if sep_obj.type == 'MESH' and sep_obj.data.materials:
+                    mat_name = sep_obj.data.materials[0].name
+                    sep_obj.name = f"{original_name}_{mat_name}"
+
+            total_count += len(separated_objs)
+
+        self.report({'INFO'}, f"已按材质分离共 {total_count} 个物体")
+        return {'FINISHED'}
+
+
 class XQFA_OT_OctahedralUV(bpy.types.Operator):
     """生成切线空间的八面体UV映射"""
     bl_idname = "xqfa.octahedral_uv"
@@ -701,6 +749,35 @@ class XQFA_OT_SelectLessThan4(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class XQFA_OT_SelectNegativeX(bpy.types.Operator):
+    bl_idname = "xqfa.select_negative_x"
+    bl_label = "选择X<0的顶点"
+    bl_description = "在编辑模式中，选择X坐标小于0的顶点"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        return obj is not None and obj.type == 'MESH' and obj.mode == 'EDIT'
+
+    def execute(self, context):
+        import bmesh
+        obj = context.active_object
+        bm = bmesh.from_edit_mesh(obj.data)
+
+        bpy.ops.mesh.select_all(action='DESELECT')
+
+        count = 0
+        for v in bm.verts:
+            if v.co.x < 0.0:
+                v.select = True
+                count += 1
+
+        bmesh.update_edit_mesh(obj.data)
+        self.report({'INFO'}, f"已选择 {count} 个X<0的顶点")
+        return {'FINISHED'}
+
+
 class XQFA_OT_UndoTriSubdivide(bpy.types.Operator):
     bl_idname = "xqfa.undo_tri_subdivide"
     bl_label = "还原三角面中点细分"
@@ -834,11 +911,13 @@ classes = (
     XQFA_OT_NumberToBone,
     XQFA_OT_MiniPlane,
     XQFA_OT_RenameComponents,
+    XQFA_OT_SeparateByMaterial,
     XQFA_OT_ApplyAsShapekey,
     XQFA_OT_OctahedralUV,
     XQFA_OT_SelectWithChildren,
     XQFA_OT_SelectMoreThan4,
     XQFA_OT_SelectLessThan4,
+    XQFA_OT_SelectNegativeX,
     XQFA_OT_UndoTriSubdivide,
 )
 

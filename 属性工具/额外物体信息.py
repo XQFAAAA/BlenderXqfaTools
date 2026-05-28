@@ -6,6 +6,7 @@ from bpy_extras.view3d_utils import location_3d_to_region_2d
 
 # 绘制处理器
 _draw_handle = None
+_draw_handle_uv = None
 
 def draw_shape_key_overlay(context):
     # 检查是否启用物体额外信息
@@ -21,6 +22,11 @@ def draw_shape_key_overlay(context):
     if hasattr(context.scene, "show_vertex_ids") and context.scene.show_vertex_ids:
         if obj.mode == 'EDIT' and obj.type == 'MESH':
             draw_vertex_ids(context, obj)
+    
+    # --- 3. 绘制选中顶点的面拐编号 ---
+    if hasattr(context.scene, "show_loop_ids") and context.scene.show_loop_ids:
+        if obj.mode == 'EDIT' and obj.type == 'MESH':
+            draw_loop_ids(context, obj)
 
 def draw_stat_info(context, obj):
     """绘制左下角的基础信息统计"""
@@ -64,8 +70,8 @@ def draw_vertex_ids(context, obj):
     bm = bmesh.from_edit_mesh(obj.data)
     
     font_id = 0
-    blf.size(font_id, 13)
-    blf.color(font_id, 0.0, 1.0, 0.8, 1.0) # 青色，方便辨认
+    blf.size(font_id, 18)
+    blf.color(font_id, 0.0, 1.0, 0.8, 1.0)
     
     region = context.region
     rv3d = context.region_data
@@ -83,6 +89,104 @@ def draw_vertex_ids(context, obj):
         if screen_pos:
             blf.position(font_id, screen_pos[0] + 5, screen_pos[1] + 5, 0)
             blf.draw(font_id, str(v.index))
+
+def draw_loop_ids(context, obj):
+    """在 3D 视图中顶点位置绘制面拐编号 (Loop Index)"""
+    bm = bmesh.from_edit_mesh(obj.data)
+    
+    font_id = 0
+    blf.size(font_id, 18)
+    blf.color(font_id, 1.0, 0.6, 0.2, 1.0)
+    
+    region = context.region
+    rv3d = context.region_data
+    matrix_world = obj.matrix_world
+
+    selected_verts = [v for v in bm.verts if v.select]
+    
+    for v in selected_verts:
+        loop_indices = [loop.index for loop in v.link_loops]
+        if not loop_indices:
+            continue
+        world_pos = matrix_world @ v.co
+        screen_pos = location_3d_to_region_2d(region, rv3d, world_pos)
+        if screen_pos:
+            text = ",".join(map(str, loop_indices))
+            blf.position(font_id, screen_pos[0] + 5, screen_pos[1] - 12, 0)
+            blf.draw(font_id, text)
+
+def draw_uv_overlay(context):
+    obj = context.active_object
+    if not obj:
+        return
+    if obj.mode != 'EDIT' or obj.type != 'MESH':
+        return
+    
+    if hasattr(context.scene, "show_vertex_ids_uv") and context.scene.show_vertex_ids_uv:
+        draw_vertex_ids_uv(context, obj)
+    
+    if hasattr(context.scene, "show_loop_ids_uv") and context.scene.show_loop_ids_uv:
+        draw_loop_ids_uv(context, obj)
+
+def draw_vertex_ids_uv(context, obj):
+    bm = bmesh.from_edit_mesh(obj.data)
+    uv_layer = bm.loops.layers.uv.active
+    if uv_layer is None:
+        return
+    
+    font_id = 0
+    blf.size(font_id, 18)
+    blf.color(font_id, 0.0, 1.0, 0.8, 1.0)
+    
+    region = context.region
+    view2d = region.view2d
+    
+    selected_verts = [v for v in bm.verts if v.select]
+    
+    for v in selected_verts:
+        seen = set()
+        for loop in v.link_loops:
+            uv = loop[uv_layer].uv
+            key = (round(uv.x, 4), round(uv.y, 4))
+            if key in seen:
+                continue
+            seen.add(key)
+            screen_pos = view2d.view_to_region(uv.x, uv.y, clip=False)
+            if screen_pos:
+                blf.position(font_id, screen_pos[0] + 3, screen_pos[1] + 3, 0)
+                blf.draw(font_id, str(v.index))
+
+def draw_loop_ids_uv(context, obj):
+    bm = bmesh.from_edit_mesh(obj.data)
+    uv_layer = bm.loops.layers.uv.active
+    if uv_layer is None:
+        return
+    
+    font_id = 0
+    blf.size(font_id, 18)
+    blf.color(font_id, 1.0, 0.6, 0.2, 1.0)
+    
+    region = context.region
+    view2d = region.view2d
+    
+    selected_verts = [v for v in bm.verts if v.select]
+    
+    uv_to_loops = {}
+    for v in selected_verts:
+        for loop in v.link_loops:
+            uv = loop[uv_layer].uv
+            key = (round(uv.x, 4), round(uv.y, 4))
+            uv_to_loops.setdefault(key, []).append(loop.index)
+    
+    for (uv_x, uv_y), loop_indices in uv_to_loops.items():
+        screen_pos = view2d.view_to_region(uv_x, uv_y, clip=False)
+        if screen_pos:
+            text = ",".join(map(str, loop_indices))
+            blf.position(font_id, screen_pos[0] + 3, screen_pos[1] - 16, 0)
+            blf.draw(font_id, text)
+
+def draw_callback_uv():
+    draw_uv_overlay(bpy.context)
 
 def draw_callback_px():
     draw_shape_key_overlay(bpy.context)
@@ -151,8 +255,15 @@ class DATA_PT_ExtraObjectInfoPanel(bpy.types.Panel):
         layout = self.layout
         col = layout.column()
         col.prop(context.scene, "show_extra_object_info", text="显示左下角信息", icon="INFO")
-        col.prop(context.scene, "show_vertex_ids", text="显示选中顶点ID", icon="RESTRICT_SELECT_OFF")
+        col.prop(context.scene, "show_vertex_ids", text="显示顶点ID", icon="RESTRICT_SELECT_OFF")
+        col.prop(context.scene, "show_loop_ids", text="显示面拐ID", icon="LOOP_FORWARDS")
 
+        col.separator()
+        col.label(text="UV 编辑器:", icon="UV")
+        col.prop(context.scene, "show_vertex_ids_uv", text="显示顶点ID", icon="RESTRICT_SELECT_OFF")
+        col.prop(context.scene, "show_loop_ids_uv", text="显示面拐ID", icon="LOOP_FORWARDS")
+
+        col.separator()
         col.operator(O_CopySelectedVertexIds.bl_idname, text="复制顶点ID", icon="COPYDOWN")
 
 def register():
@@ -161,11 +272,20 @@ def register():
     
     bpy.types.Scene.show_extra_object_info = bpy.props.BoolProperty(name="物体额外信息", default=True)
     bpy.types.Scene.show_vertex_ids = bpy.props.BoolProperty(name="显示选中顶点ID", default=False)
+    bpy.types.Scene.show_loop_ids = bpy.props.BoolProperty(name="显示面拐ID", default=False)
+    bpy.types.Scene.show_vertex_ids_uv = bpy.props.BoolProperty(name="UV显示顶点ID", default=False)
+    bpy.types.Scene.show_loop_ids_uv = bpy.props.BoolProperty(name="UV显示面拐ID", default=False)
     
     global _draw_handle
     if _draw_handle is None:
         _draw_handle = bpy.types.SpaceView3D.draw_handler_add(
             draw_callback_px, (), 'WINDOW', 'POST_PIXEL'
+        )
+    
+    global _draw_handle_uv
+    if _draw_handle_uv is None:
+        _draw_handle_uv = bpy.types.SpaceImageEditor.draw_handler_add(
+            draw_callback_uv, (), 'WINDOW', 'POST_PIXEL'
         )
 
 def unregister():
@@ -174,11 +294,19 @@ def unregister():
     
     del bpy.types.Scene.show_extra_object_info
     del bpy.types.Scene.show_vertex_ids
+    del bpy.types.Scene.show_loop_ids
+    del bpy.types.Scene.show_vertex_ids_uv
+    del bpy.types.Scene.show_loop_ids_uv
     
     global _draw_handle
     if _draw_handle is not None:
         bpy.types.SpaceView3D.draw_handler_remove(_draw_handle, 'WINDOW')
         _draw_handle = None
+    
+    global _draw_handle_uv
+    if _draw_handle_uv is not None:
+        bpy.types.SpaceImageEditor.draw_handler_remove(_draw_handle_uv, 'WINDOW')
+        _draw_handle_uv = None
 
 if __name__ == "__main__":
     register()

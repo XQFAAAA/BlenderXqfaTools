@@ -14,9 +14,10 @@ bl_info = {
 
 ########################## Divider ##########################
 from . import panel
-from .骨骼工具 import 骨骼与顶点组, 骨骼姿态操作, 骨骼编辑操作, MOD骨架替换
-from .属性工具 import 顶点组, 形态键, UV贴图, 顶点色, 额外物体信息
-from .其他工具 import 其他, 材质, 烘焙节点组
+from .bone_tools import bone_and_vertex_groups, bone_pose, bone_edit, mod_armature_replace
+from .attribute_tools import vertex_groups, shapekey, uv, vertex_colors, extra_object_info
+from .other_tools import misc
+from .material_tools import material, bake_node_groups, material_snapshot
 
 class XqfaPreferences(bpy.types.AddonPreferences):
     bl_idname = __package__
@@ -25,8 +26,8 @@ class XqfaPreferences(bpy.types.AddonPreferences):
     def get_default_texconv_path():
         # 获取当前文件（__init__.py）所在的目录
         addon_dir = os.path.dirname(__file__)
-        # 拼接目标路径：插件目录/其他工具/texconv.exe
-        default_path = os.path.join(addon_dir, "其他工具", "texconv.exe")
+        # 拼接目标路径：插件目录/other_tools/texconv.exe
+        default_path = os.path.join(addon_dir, "other_tools", "texconv.exe")
         return default_path
 
     # 2. 将默认值设为计算出的路径
@@ -46,35 +47,37 @@ class XqfaPreferences(bpy.types.AddonPreferences):
 def register():
     bpy.utils.register_class(XqfaPreferences)
     panel.register()
-    骨骼与顶点组.register()
-    骨骼姿态操作.register()
-    骨骼编辑操作.register()
-    MOD骨架替换.register()
-    顶点组.register()
-    形态键.register()
-    UV贴图.register()
-    顶点色.register()
-    额外物体信息.register()
-    其他.register()
-    材质.register()
-    烘焙节点组.register()
+    bone_and_vertex_groups.register()
+    bone_pose.register()
+    bone_edit.register()
+    mod_armature_replace.register()
+    vertex_groups.register()
+    shapekey.register()
+    uv.register()
+    vertex_colors.register()
+    extra_object_info.register()
+    misc.register()
+    material.register()
+    material_snapshot.register()
+    bake_node_groups.register()
 
 # 注销插件
 def unregister():
     bpy.utils.unregister_class(XqfaPreferences)
     panel.unregister()
-    骨骼与顶点组.unregister()
-    骨骼姿态操作.unregister()
-    骨骼编辑操作.unregister()
-    MOD骨架替换.unregister()
-    顶点组.unregister()
-    形态键.unregister()
-    UV贴图.unregister()
-    顶点色.unregister()
-    额外物体信息.unregister()
-    其他.unregister()
-    材质.unregister()
-    烘焙节点组.unregister()
+    bone_and_vertex_groups.unregister()
+    bone_pose.unregister()
+    bone_edit.unregister()
+    mod_armature_replace.unregister()
+    vertex_groups.unregister()
+    shapekey.unregister()
+    uv.unregister()
+    vertex_colors.unregister()
+    extra_object_info.unregister()
+    misc.unregister()
+    material.unregister()
+    material_snapshot.unregister()
+    bake_node_groups.unregister()
 
 
 if __name__ == "__main__":

@@ -11,85 +11,10 @@ class ObjType(bpy.types.Operator):
     def is_armature(scene, obj):
         return obj.type == "ARMATURE"
 
-class O_VertexGroupsDelAll(bpy.types.Operator):
-    bl_idname = "xqfa.vertex_groups_del_all_more"
-    bl_label = "删除所有顶点组"
-    bl_description = "删除选择的多个物体的所有顶点组"
-    
-    def invoke(self, context, event): # 确认窗口
-        wm = context.window_manager
-        return wm.invoke_props_dialog(self, width=160)
-
-    def execute(self, context):
-        # 遍历所选物体
-        for obj in context.selected_objects:
-            if obj.type == 'MESH':
-                # 删除每个顶点组
-                for group in obj.vertex_groups:
-                    obj.vertex_groups.remove(group)
-                
-                # 更新物体
-                obj.update_tag()
-            else:
-                print("不是网络对象")
-        self.report({'INFO'}, "已删除选择物体的所有顶点组！")
-        return {'FINISHED'}
-
-class O_VertexGroupsDelNone(bpy.types.Operator):
-    bl_idname = "xqfa.vertex_groups_del_none_more"
-    bl_label = "删除无权重顶点组"
-    bl_description = "删除选择的多个物体中没有顶点权重的顶点组"
-    
-    def execute(self, context):
-        # 遍历所选物体
-        for obj in context.selected_objects:
-            if obj and obj.type == 'MESH':
-                
-                # 获取所有的顶点组
-                vertex_groups = obj.vertex_groups
-
-                # 获取网格数据
-                mesh = obj.data
-
-                # 创建一个字典来存储顶点组的信息
-                vertex_group_info = {}
-                for group in vertex_groups:
-                    vertex_group_info[group.name] = []
-
-                # 遍历每个顶点
-                for vertex in mesh.vertices:
-                    for group in vertex.groups: #遍历单个顶点的顶点组
-                        group_index = group.group
-                        group_name = vertex_groups[group_index].name
-                        weight = group.weight
-
-                        # 将顶点和权重信息添加到字典中
-                        vertex_group_info[group_name].append((vertex.index, weight))
-
-                # 删除空的顶点组
-                for group_name, vertex_info in vertex_group_info.items():
-                    if not vertex_info:
-                        # 删除顶点组
-                        obj.vertex_groups.remove(obj.vertex_groups[group_name])
-                        print(f"已删除顶点组：{group_name}")
-                # 打印功能  
-                '''      
-                for group_name, vertex_info in vertex_group_info.items():
-                    print(f"顶点组: {group_name}")
-                    for vertex, weight in vertex_info:
-                        print(f"  顶点: {vertex}, 权重: {weight}")
-                '''
-                print("已删除空的顶点组。")
-            else:
-                print("请先选择一个Mesh对象作为活动对象。")
-
-        return {'FINISHED'}
-
-########################## Divider ##########################
 
 class O_NoVgDelBone(bpy.types.Operator):
     bl_idname = "xqfa.vertex_groups_no_vg_del_bone"
-    bl_label = "删除无对应顶点组的骨骼"
+    bl_label = "清理骨骼"
     bl_description = "删除选择的骨骼中无对应顶点组的骨骼"
 
     def execute(self, context):
@@ -127,7 +52,7 @@ class O_NoVgDelBone(bpy.types.Operator):
 
 class O_NoBoneDelVg(bpy.types.Operator):
     bl_idname = "xqfa.vertex_groups_no_bone_del_vg"
-    bl_label = "删除无对应骨骼的顶点组"
+    bl_label = "清理顶点组"
     bl_description = "删除顶点组中无对应骨骼的顶点组"
     
     def execute(self, context):
@@ -277,7 +202,7 @@ def merge_vertex_groups(obj, source_bone, target_bone):
             print(f"Error merging vertex groups for {obj.name}: {e}")
 
 class BONE_OT_merge_to_parent(bpy.types.Operator):
-    """将选择的骨骼合并到它们的父级骨骼"""
+    """将选择的骨骼合并到它们的父级骨骼，影响顶点组"""
     bl_idname = "xqfa.merge_to_parent"
     bl_label = "将选择骨骼合并到父级"
     bl_options = {'REGISTER', 'UNDO'}
@@ -339,7 +264,7 @@ class BONE_OT_merge_to_parent(bpy.types.Operator):
         return {'FINISHED'}
 
 class BONE_OT_merge_to_active(bpy.types.Operator):
-    """将选择的骨骼合并到活动骨骼"""
+    """将选择的骨骼合并到活动骨骼，影响顶点组"""
     bl_idname = "xqfa.merge_to_active"
     bl_label = "将选择骨骼合并到活动骨骼"
     bl_options = {'REGISTER', 'UNDO'}
@@ -408,6 +333,162 @@ class BONE_OT_merge_to_active(bpy.types.Operator):
 
 ########################## Divider ##########################
 
+class VG_OT_merge_to_parent(bpy.types.Operator):
+    """将选中骨骼对应的顶点组合并到其父级骨骼的顶点组（不删除骨骼）"""
+    bl_idname = "xqfa.vg_merge_to_parent"
+    bl_label = "顶点组合并到父级"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return (context.mode == 'POSE' and
+                context.active_object and
+                context.active_object.type == 'ARMATURE' and
+                context.selected_pose_bones)
+
+    def execute(self, context):
+        try:
+            source_mesh = bpy.data.objects.get(context.scene.vg_source_mesh.name)
+        except:
+            self.report({'ERROR'}, "请先选择网格对象")
+            return {'CANCELLED'}
+
+        if not source_mesh:
+            self.report({'ERROR'}, "请先选择网格对象")
+            return {'CANCELLED'}
+
+        selected_bones = context.selected_pose_bones
+        sorted_bones = sorted(selected_bones, key=lambda b: len(b.parent_recursive), reverse=True)
+
+        merged_count = 0
+        for bone in sorted_bones:
+            bone_name = bone.name
+            parent_bone = bone.parent
+
+            if not parent_bone:
+                self.report({'WARNING'}, f"骨骼 {bone_name} 没有父级，跳过")
+                continue
+
+            parent_name = parent_bone.name
+
+            if bone_name not in source_mesh.vertex_groups:
+                source_mesh.vertex_groups.new(name=bone_name)
+            if parent_name not in source_mesh.vertex_groups:
+                source_mesh.vertex_groups.new(name=parent_name)
+
+            merge_vertex_groups(source_mesh, bone_name, parent_name)
+
+            if bone_name in source_mesh.vertex_groups:
+                source_mesh.vertex_groups.remove(source_mesh.vertex_groups[bone_name])
+
+            merged_count += 1
+
+        self.report({'INFO'}, f"已合并 {merged_count} 个顶点组到父级")
+        return {'FINISHED'}
+
+
+class VG_OT_merge_to_active(bpy.types.Operator):
+    """将选中骨骼对应的顶点组合并到活动骨骼的顶点组（不删除骨骼）"""
+    bl_idname = "xqfa.vg_merge_to_active"
+    bl_label = "顶点组合并到活动"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return (context.mode == 'POSE' and
+                context.active_object and
+                context.active_object.type == 'ARMATURE' and
+                context.selected_pose_bones and
+                context.active_pose_bone and
+                len(context.selected_pose_bones) > 1)
+
+    def execute(self, context):
+        try:
+            source_mesh = bpy.data.objects.get(context.scene.vg_source_mesh.name)
+        except:
+            self.report({'ERROR'}, "请先选择网格对象")
+            return {'CANCELLED'}
+
+        if not source_mesh:
+            self.report({'ERROR'}, "请先选择网格对象")
+            return {'CANCELLED'}
+
+        selected_bones = context.selected_pose_bones
+        active_bone = context.active_pose_bone
+
+        if active_bone not in selected_bones:
+            self.report({'ERROR'}, "活动骨骼必须在选择的骨骼中")
+            return {'CANCELLED'}
+
+        bones_to_merge = [b for b in selected_bones if b != active_bone]
+        active_bone_name = active_bone.name
+        sorted_bones = sorted(bones_to_merge, key=lambda b: len(b.parent_recursive), reverse=True)
+
+        merged_count = 0
+        for bone in sorted_bones:
+            bone_name = bone.name
+
+            if bone_name not in source_mesh.vertex_groups:
+                source_mesh.vertex_groups.new(name=bone_name)
+            if active_bone_name not in source_mesh.vertex_groups:
+                source_mesh.vertex_groups.new(name=active_bone_name)
+
+            merge_vertex_groups(source_mesh, bone_name, active_bone_name)
+
+            if bone_name in source_mesh.vertex_groups:
+                source_mesh.vertex_groups.remove(source_mesh.vertex_groups[bone_name])
+
+            merged_count += 1
+
+        self.report({'INFO'}, f"已合并 {merged_count} 个顶点组到活动骨骼")
+        return {'FINISHED'}
+
+
+class VG_OT_delete_corresponding(bpy.types.Operator):
+    """删除选中骨骼对应的顶点组（不删除骨骼）"""
+    bl_idname = "xqfa.vg_delete_corresponding"
+    bl_label = "删除对应顶点组"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return (context.mode == 'POSE' and
+                context.active_object and
+                context.active_object.type == 'ARMATURE' and
+                context.selected_pose_bones)
+
+    def execute(self, context):
+        try:
+            source_mesh = bpy.data.objects.get(context.scene.vg_source_mesh.name)
+        except:
+            self.report({'ERROR'}, "请先选择网格对象")
+            return {'CANCELLED'}
+
+        if not source_mesh:
+            self.report({'ERROR'}, "请先选择网格对象")
+            return {'CANCELLED'}
+
+        deleted_count = 0
+        for bone in context.selected_pose_bones:
+            if bone.name in source_mesh.vertex_groups:
+                source_mesh.vertex_groups.remove(source_mesh.vertex_groups[bone.name])
+                deleted_count += 1
+
+        self.report({'INFO'}, f"已删除 {deleted_count} 个对应顶点组")
+        return {'FINISHED'}
+
+
+########################## Divider ##########################
+
+def auto_set_vg_armature_handler(scene, depsgraph):
+    """进入姿态模式时自动设置 vg_source_armature 为活动骨架"""
+    if scene.vg_source_armature is None:
+        for obj in scene.objects:
+            if obj.type == 'ARMATURE' and obj.mode == 'POSE':
+                scene.vg_source_armature = obj
+                break
+
+
 class P_VertexGroups(bpy.types.Panel):
     bl_idname = "X_PT_VertexGroups"
     bl_label = "骨骼与顶点组"
@@ -423,53 +504,61 @@ class P_VertexGroups(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         col = layout.column(align=True)
-        col.operator(O_VertexGroupsDelAll.bl_idname, text=O_VertexGroupsDelAll.bl_label, icon="GROUP_VERTEX")       
-        col.operator(O_VertexGroupsDelNone.bl_idname, text=O_VertexGroupsDelNone.bl_label, icon="GROUP_VERTEX")
         row = col.row(align=True)
         row.operator(BONE_OT_merge_to_parent.bl_idname, text="合并到父级", icon="BONE_DATA")
         row.operator(BONE_OT_merge_to_active.bl_idname, text="合并到活动", icon="BONE_DATA")
 
         box = layout.box()
+
         col = box.column(align=True)
-        col.prop(context.scene, "vg_source_mesh", text="", icon="MESH_DATA")
         col.prop(context.scene, "vg_source_armature", text="", icon="ARMATURE_DATA")
-        col.label(text="顶点组数量:")
-        if context.scene.vg_source_mesh:
-            col.label(text=f"{len(context.scene.vg_source_mesh.vertex_groups)}")
-        col.operator(O_NoVgDelBone.bl_idname, text=O_NoVgDelBone.bl_label, icon="BONE_DATA")       
-        col.operator(O_NoBoneDelVg.bl_idname, text=O_NoBoneDelVg.bl_label, icon="GROUP_VERTEX")
+        col.prop(context.scene, "vg_source_mesh", text="", icon="MESH_DATA")
         row = col.row(align=True)
-        row.operator(O_AddBoneNumber.bl_idname, text=O_AddBoneNumber.bl_label)
-        row.operator(O_RemoveBoneNumber.bl_idname, text=O_RemoveBoneNumber.bl_label)
+        row.operator(VG_OT_merge_to_parent.bl_idname, text=VG_OT_merge_to_parent.bl_label, icon="GROUP_VERTEX")
+        row.operator(VG_OT_merge_to_active.bl_idname, text=VG_OT_merge_to_active.bl_label, icon="GROUP_VERTEX")
+        col.operator(VG_OT_delete_corresponding.bl_idname, text=VG_OT_delete_corresponding.bl_label, icon="TRASH")
+        row = col.row(align=True)
+        row.operator(O_NoVgDelBone.bl_idname, text=O_NoVgDelBone.bl_label, icon="BONE_DATA")
+        row.operator(O_NoBoneDelVg.bl_idname, text=O_NoBoneDelVg.bl_label, icon="GROUP_VERTEX")
+        row = col.row(align=True)
+        row.operator(O_AddBoneNumber.bl_idname, text=O_AddBoneNumber.bl_label, icon="LINENUMBERS_ON")
+        row.operator(O_RemoveBoneNumber.bl_idname, text=O_RemoveBoneNumber.bl_label, icon="LINENUMBERS_ON")
+
 
 
 ########################## Divider ##########################
 
 def register():
-    bpy.utils.register_class(O_VertexGroupsDelAll)
-    bpy.utils.register_class(O_VertexGroupsDelNone)
     bpy.utils.register_class(O_NoVgDelBone)
     bpy.utils.register_class(O_NoBoneDelVg)
     bpy.utils.register_class(O_AddBoneNumber)
     bpy.utils.register_class(O_RemoveBoneNumber)
     bpy.utils.register_class(BONE_OT_merge_to_parent)
     bpy.utils.register_class(BONE_OT_merge_to_active)
+    bpy.utils.register_class(VG_OT_merge_to_parent)
+    bpy.utils.register_class(VG_OT_merge_to_active)
+    bpy.utils.register_class(VG_OT_delete_corresponding)
     bpy.utils.register_class(P_VertexGroups)
-    
 
     bpy.types.Scene.vg_source_mesh = bpy.props.PointerProperty(type=bpy.types.Object, poll=ObjType.is_mesh)
     bpy.types.Scene.vg_source_armature = bpy.props.PointerProperty(type=bpy.types.Object, poll=ObjType.is_armature)
 
+    bpy.app.handlers.depsgraph_update_post.append(auto_set_vg_armature_handler)
+
 def unregister():
-    bpy.utils.unregister_class(O_VertexGroupsDelAll)
-    bpy.utils.unregister_class(O_VertexGroupsDelNone)
     bpy.utils.unregister_class(O_NoVgDelBone)
     bpy.utils.unregister_class(O_NoBoneDelVg)
     bpy.utils.unregister_class(O_AddBoneNumber)
     bpy.utils.unregister_class(O_RemoveBoneNumber)
     bpy.utils.unregister_class(BONE_OT_merge_to_parent)
     bpy.utils.unregister_class(BONE_OT_merge_to_active)
+    bpy.utils.unregister_class(VG_OT_merge_to_parent)
+    bpy.utils.unregister_class(VG_OT_merge_to_active)
+    bpy.utils.unregister_class(VG_OT_delete_corresponding)
     bpy.utils.unregister_class(P_VertexGroups)
+
+    if auto_set_vg_armature_handler in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.remove(auto_set_vg_armature_handler)
 
     del bpy.types.Scene.vg_source_mesh
     del bpy.types.Scene.vg_source_armature

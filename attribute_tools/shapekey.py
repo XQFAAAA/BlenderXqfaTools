@@ -18,25 +18,38 @@ class DATA_PT_shape_key_tools(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         col = layout.column(align=True)
-        row = col.row(align=True)
-        row.prop(context.scene, "shape_key_similarity_threshold",text='')
-        row.operator(O_ShapeKeysMatchRename.bl_idname, text=O_ShapeKeysMatchRename.bl_label, icon="SORTBYEXT")
-        row = col.row(align=True)
-        row.operator(O_ShapeKeysSortMatch.bl_idname, text=O_ShapeKeysSortMatch.bl_label, icon="SORTSIZE")
-        row.operator(O_ShapeKeysRenameByOrder.bl_idname, text=O_ShapeKeysRenameByOrder.bl_label, icon="SORTALPHA")
+        col.operator(O_ShapeKeysMatchRename.bl_idname, text=O_ShapeKeysMatchRename.bl_label, icon="SORTBYEXT")
+        col.operator(O_ShapeKeysSortMatch.bl_idname, text=O_ShapeKeysSortMatch.bl_label, icon="SORTSIZE")
+        col.operator(O_ShapeKeysRenameByOrder.bl_idname, text=O_ShapeKeysRenameByOrder.bl_label, icon="SORTALPHA")
         col.separator()
-        row = col.row(align=True)
-        row.prop(context.scene, "shape_key_select_threshold", text='')
-        row.operator(O_ShapeKeysSelectAffectedVertices.bl_idname, text=O_ShapeKeysSelectAffectedVertices.bl_label, icon="VERTEXSEL")
+        col.operator(O_ShapeKeysSelectAffectedVertices.bl_idname, text=O_ShapeKeysSelectAffectedVertices.bl_label, icon="VERTEXSEL")
+        col.operator(O_ShapeKeysTransfer.bl_idname, text=O_ShapeKeysTransfer.bl_label, icon="SHAPEKEY_DATA")
 
 class O_ShapeKeysMatchRename(bpy.types.Operator):
     bl_idname = "xqfa.shape_keys_match_rename"
     bl_label = "匹配重命名"
     bl_description = ("基于顶点平均位置匹配重命名活动物体的形态键（需选择2个网格物体）\n"
                      "用于按参考模型的形态键名称重命名当前模型的形态键")
-    
+
+    similarity_threshold: bpy.props.FloatProperty(
+        name="相似度",
+        description="匹配形态键时的最小相似度(0-1)",
+        default=0.94,
+        min=0.5,
+        max=1.0,
+        step=0.01,
+        precision=3
+    )
+
+    def invoke(self, context, event):
+        wm = context.window_manager
+        return wm.invoke_props_dialog(self, width=200)
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, "similarity_threshold")
+
     def execute(self, context: bpy.types.Context) -> Set[str]:
-        self.similarity_threshold = context.scene.shape_key_similarity_threshold
         start_time = time.time()
         
         try:
@@ -443,7 +456,24 @@ class O_ShapeKeysSelectAffectedVertices(bpy.types.Operator):
     bl_label = "选中影响顶点"
     bl_description = ("选中当前形态键影响的顶点\n"
                      "选中与基础形态键位置有差异的顶点")
-    
+
+    select_threshold: bpy.props.FloatProperty(
+        name="阈值",
+        description="顶点位置差异的最小阈值（米）",
+        default=0.0001,
+        min=0.0,
+        step=0.0001,
+        precision=5
+    )
+
+    def invoke(self, context, event):
+        wm = context.window_manager
+        return wm.invoke_props_dialog(self, width=200)
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, "select_threshold")
+
     def execute(self, context):
         try:
             obj = context.active_object
@@ -469,8 +499,7 @@ class O_ShapeKeysSelectAffectedVertices(bpy.types.Operator):
                 self.report({'ERROR'}, "当前是基础形态键，请选择其他形态键")
                 return {'CANCELLED'}
             
-            threshold = context.scene.shape_key_select_threshold
-            result = self._select_affected_vertices(obj, current_sk, threshold)
+            result = self._select_affected_vertices(obj, current_sk, self.select_threshold)
             
             self.report({'INFO'}, f"已选中 {result['count']} 个顶点")
             return {'FINISHED'}
@@ -527,31 +556,77 @@ class O_ShapeKeysSelectAffectedVertices(bpy.types.Operator):
         }
 
 
+class O_ShapeKeysTransfer(bpy.types.Operator):
+    bl_idname = "xqfa.shape_keys_transfer"
+    bl_label = "传递形态键"
+    bl_description = "将选择物体A的所有形态键传递给活动物体B（顶点ID需一致）"
+
+    def execute(self, context):
+        selected_objs = context.selected_objects
+        active_obj = context.active_object
+
+        if len(selected_objs) != 2:
+            self.report({'ERROR'}, "请选择2个网格物体")
+            return {'CANCELLED'}
+
+        if active_obj not in selected_objs:
+            self.report({'ERROR'}, "活动物体必须是选中的物体之一")
+            return {'CANCELLED'}
+
+        source_obj = next(obj for obj in selected_objs if obj != active_obj)
+        target_obj = active_obj
+
+        if source_obj.type != 'MESH' or target_obj.type != 'MESH':
+            self.report({'ERROR'}, "两个物体都必须是网格类型")
+            return {'CANCELLED'}
+
+        if not source_obj.data.shape_keys:
+            self.report({'ERROR'}, "源物体没有形态键")
+            return {'CANCELLED'}
+
+        src_verts_count = len(source_obj.data.vertices)
+        tgt_verts_count = len(target_obj.data.vertices)
+        if src_verts_count != tgt_verts_count:
+            self.report({'ERROR'}, f"顶点数不一致: 源{src_verts_count} ≠ 目标{tgt_verts_count}")
+            return {'CANCELLED'}
+
+        # 确保目标物体有形态键基础
+        if not target_obj.data.shape_keys:
+            target_obj.shape_key_add(name="Basis", from_mix=False)
+
+        source_sks = source_obj.data.shape_keys.key_blocks
+        target_sks = target_obj.data.shape_keys.key_blocks
+
+        transferred = 0
+        for src_sk in source_sks:
+            if src_sk.name == "Basis":
+                continue
+
+            # 检查目标是否已有同名形态键，没有则创建
+            tgt_sk = target_sks.get(src_sk.name)
+            if not tgt_sk:
+                tgt_sk = target_obj.shape_key_add(name=src_sk.name, from_mix=False)
+
+            # 获取源形态键顶点数据
+            src_data = np.zeros(src_verts_count * 3, dtype=np.float32)
+            src_sk.data.foreach_get('co', src_data)
+
+            # 写入目标形态键
+            tgt_sk.data.foreach_set('co', src_data)
+
+            transferred += 1
+
+        self.report({'INFO'}, f"已传递 {transferred} 个形态键: {source_obj.name} → {target_obj.name}")
+        return {'FINISHED'}
+
+
 def register():
     bpy.utils.register_class(DATA_PT_shape_key_tools)
     bpy.utils.register_class(O_ShapeKeysMatchRename)
     bpy.utils.register_class(O_ShapeKeysSortMatch)
     bpy.utils.register_class(O_ShapeKeysRenameByOrder)
     bpy.utils.register_class(O_ShapeKeysSelectAffectedVertices)
-
-    bpy.types.Scene.shape_key_similarity_threshold = bpy.props.FloatProperty(
-        name="相似度",
-        description="匹配形态键时的最小相似度(0-1)",
-        default=0.94,
-        min=0.5,
-        max=1.0,
-        step=0.01,
-        precision=3
-    )
-    
-    bpy.types.Scene.shape_key_select_threshold = bpy.props.FloatProperty(
-        name="阈值",
-        description="顶点位置差异的最小阈值（米）",
-        default=0.0001,
-        min=0.0,
-        step=0.0001,
-        precision=5
-    )
+    bpy.utils.register_class(O_ShapeKeysTransfer)
 
 def unregister():
     bpy.utils.unregister_class(DATA_PT_shape_key_tools)
@@ -559,6 +634,4 @@ def unregister():
     bpy.utils.unregister_class(O_ShapeKeysSortMatch)
     bpy.utils.unregister_class(O_ShapeKeysRenameByOrder)
     bpy.utils.unregister_class(O_ShapeKeysSelectAffectedVertices)
-    
-    del bpy.types.Scene.shape_key_similarity_threshold
-    del bpy.types.Scene.shape_key_select_threshold
+    bpy.utils.unregister_class(O_ShapeKeysTransfer)

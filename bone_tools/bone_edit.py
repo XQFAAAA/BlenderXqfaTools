@@ -443,6 +443,69 @@ class O_BoneMoveTailToChild(bpy.types.Operator):
 
 ########################## Divider ##########################
 
+class O_BoneStraightenTwist(bpy.types.Operator):
+    bl_idname = "xqfa.straighten_twist"
+    bl_label = "摆正扭转"
+    bl_description = "调整选中骨骼的扭转角度，使骨骼X轴与全局XY平面平行，且Z轴指向上方"
+
+    def execute(self, context):
+        if context.mode != 'EDIT_ARMATURE':
+            self.report({'WARNING'}, "必须在骨骼编辑模式下运行此操作")
+            return {'CANCELLED'}
+
+        armature_obj = context.object
+        if not armature_obj or armature_obj.type != 'ARMATURE':
+            self.report({'WARNING'}, "未选择骨架对象")
+            return {'CANCELLED'}
+
+        selected_bones = context.selected_editable_bones
+        if not selected_bones:
+            self.report({'WARNING'}, "没有选中任何骨骼")
+            return {'CANCELLED'}
+
+        M = armature_obj.matrix_world.to_3x3()
+        M_row2 = Vector((M[2][0], M[2][1], M[2][2]))
+
+        count = 0
+        for bone in selected_bones:
+            bone_dir = bone.tail - bone.head
+            if bone_dir.length < 1e-6:
+                continue
+            bone_dir.normalize()
+
+            # 使 X_local 的全局 z 分量为 0，即 M_row2 · X_local = 0
+            x_local = bone_dir.cross(M_row2)
+            if x_local.length < 1e-6:
+                x_local = Vector((0, 0, 1)).cross(bone_dir)
+                if x_local.length < 1e-6:
+                    x_local = Vector((1, 0, 0))
+            x_local.normalize()
+
+            z_local = x_local.cross(bone_dir)
+            z_local.normalize()
+
+            # 两种可能（X 翻转 ↔ Z 翻转），取 Z 全局 z > 0 的
+            if M_row2.dot(z_local) < 0:
+                x_local.negate()
+                z_local = x_local.cross(bone_dir)
+                z_local.normalize()
+
+            # 计算当前 X 轴到目标 X 轴的绕 Y 轴旋转角，加到 roll
+            current_x = bone.x_axis.normalized()
+            cos_angle = current_x.dot(x_local)
+            angle = math.acos(max(-1.0, min(1.0, cos_angle)))
+            if current_x.cross(x_local).dot(bone_dir) < 0:
+                angle = -angle
+
+            bone.roll += angle
+            count += 1
+
+        self.report({'INFO'}, f"已摆正 {count} 个骨骼的扭转")
+        return {'FINISHED'}
+
+
+########################## Divider ##########################
+
 class P_BoneEdit(bpy.types.Panel):
     bl_idname = "X_PT_BoneEdit"
     bl_label = "编辑模式"
@@ -474,9 +537,11 @@ class P_BoneEdit(bpy.types.Panel):
             row.operator(O_BoneConnect.bl_idname, text=O_BoneConnect.bl_label)       
             row.operator(O_BoneAllConnect.bl_idname, text=O_BoneAllConnect.bl_label)
 
-            # 添加新的尾部对齐操作按钮
             row = col.row(align=True)
             row.operator(O_BoneMoveTailToChild.bl_idname, text=O_BoneMoveTailToChild.bl_label, icon='BONE_DATA')
+
+            row = col.row(align=True)
+            row.operator(O_BoneStraightenTwist.bl_idname, text=O_BoneStraightenTwist.bl_label, icon='DRIVER_ROTATIONAL_DIFFERENCE')
 
             # 骨骼矩阵
             row = layout.row()
@@ -525,6 +590,7 @@ def register():
     bpy.utils.register_class(O_BoneConnect)
     bpy.utils.register_class(O_BoneAllConnect)
     bpy.utils.register_class(O_BoneMoveTailToChild)
+    bpy.utils.register_class(O_BoneStraightenTwist)
     bpy.utils.register_class(P_BoneEdit)
     bpy.utils.register_class(PG_BoneEditWorldProps)
     bpy.types.Scene.bone_edit_world_props = bpy.props.PointerProperty(type=PG_BoneEditWorldProps)
@@ -541,6 +607,7 @@ def unregister():
     bpy.utils.unregister_class(O_BoneConnect)
     bpy.utils.unregister_class(O_BoneAllConnect)
     bpy.utils.unregister_class(O_BoneMoveTailToChild)
+    bpy.utils.unregister_class(O_BoneStraightenTwist)
     bpy.utils.unregister_class(P_BoneEdit)
     bpy.utils.unregister_class(PG_BoneEditWorldProps)
     del bpy.types.Scene.bone_edit_world_props

@@ -30,15 +30,13 @@ class DATA_PT_vertex_group_tools(bpy.types.Panel):
         row = col.row(align=True)
         row.operator(O_VertexGroupsCount.bl_idname, text=f"统计：{stats['total']} | {stats['with_weight']} | {stats['zero_weight']}", icon="GROUP_VERTEX")
 
-        row = col.row(align=True)
-        row.operator(O_VertexGroupsDelNoneActive.bl_idname, text=O_VertexGroupsDelNoneActive.bl_label, icon="GROUP_VERTEX")
+        col.operator(O_VertexGroupsDelNoneActive.bl_idname, text=O_VertexGroupsDelNoneActive.bl_label, icon="GROUP_VERTEX")
+        col.operator(O_VertexGroupsDelNoneSelected.bl_idname, text=O_VertexGroupsDelNoneSelected.bl_label, icon="GROUP_VERTEX")
+        col.operator(O_VertexGroupsDelAllSelected.bl_idname, text=O_VertexGroupsDelAllSelected.bl_label, icon="GROUP_VERTEX")
 
         col = layout.column(align=True)
-        row = col.row(align=True)
-        row.prop(context.scene, "similarity_threshold",text='')
-        row.operator(O_VertexGroupsMatchRename.bl_idname, text=O_VertexGroupsMatchRename.bl_label, icon="SORTBYEXT")
-        row = col.row(align=True)
-        row.operator(O_VertexGroupsSortMatch.bl_idname, text=O_VertexGroupsSortMatch.bl_label, icon="SORTSIZE")
+        col.operator(O_VertexGroupsMatchRename.bl_idname, text=O_VertexGroupsMatchRename.bl_label, icon="SORTBYEXT")
+        col.operator(O_VertexGroupsSortMatch.bl_idname, text=O_VertexGroupsSortMatch.bl_label, icon="SORTSIZE")
 
 
 class O_VertexGroupsCount(bpy.types.Operator):
@@ -135,6 +133,61 @@ class O_VertexGroupsDelNoneActive(bpy.types.Operator):
 
         return {'FINISHED'}
 
+
+class O_VertexGroupsDelAllSelected(bpy.types.Operator):
+    bl_idname = "xqfa.vertex_groups_del_all_more"
+    bl_label = "批量删除顶点组"
+    bl_description = "删除选择的多个物体的所有顶点组"
+
+    def invoke(self, context, event):
+        wm = context.window_manager
+        return wm.invoke_props_dialog(self, width=160)
+
+    def execute(self, context):
+        for obj in context.selected_objects:
+            if obj.type == 'MESH':
+                for group in obj.vertex_groups:
+                    obj.vertex_groups.remove(group)
+                obj.update_tag()
+            else:
+                print("不是网格对象")
+        self.report({'INFO'}, "已删除选择物体的所有顶点组！")
+        return {'FINISHED'}
+
+
+class O_VertexGroupsDelNoneSelected(bpy.types.Operator):
+    bl_idname = "xqfa.vertex_groups_del_none_more"
+    bl_label = "批量删除无权重顶点组"
+    bl_description = "删除选择的多个物体中没有顶点权重的顶点组"
+
+    def execute(self, context):
+        for obj in context.selected_objects:
+            if obj and obj.type == 'MESH':
+                vertex_groups = obj.vertex_groups
+                mesh = obj.data
+
+                vertex_group_info = {}
+                for group in vertex_groups:
+                    vertex_group_info[group.name] = []
+
+                for vertex in mesh.vertices:
+                    for group in vertex.groups:
+                        group_index = group.group
+                        group_name = vertex_groups[group_index].name
+                        weight = group.weight
+                        vertex_group_info[group_name].append((vertex.index, weight))
+
+                for group_name, vertex_info in vertex_group_info.items():
+                    if not vertex_info:
+                        obj.vertex_groups.remove(obj.vertex_groups[group_name])
+                        print(f"已删除顶点组：{group_name}")
+                print("已删除空的顶点组。")
+            else:
+                print("请先选择一个Mesh对象作为活动对象。")
+
+        return {'FINISHED'}
+
+
 # ----------------------------------------------------------------
 # 3. 匹配重命名操作 (Match Rename Operator) - 💥 优化
 # ----------------------------------------------------------------
@@ -143,9 +196,26 @@ class O_VertexGroupsMatchRename(bpy.types.Operator):
     bl_label = "匹配重命名"
     bl_description = ("基于顶点平均位置匹配重命名活动物体的顶点组（需选择2个网格物体）\n"
                      "我用来给鸣潮提取的模型按解包的模型骨骼重命名，这样顶点组有名称意义也可以操控")
-    
+
+    similarity_threshold: bpy.props.FloatProperty(
+        name="相似度",
+        description="匹配顶点组时的最小相似度(0-1)",
+        default=0.94,
+        min=0.9,
+        max=1.0,
+        step=0.01,
+        precision=3
+    )
+
+    def invoke(self, context, event):
+        wm = context.window_manager
+        return wm.invoke_props_dialog(self, width=200)
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, "similarity_threshold")
+
     def execute(self, context: bpy.types.Context) -> Set[str]:
-        self.similarity_threshold = context.scene.similarity_threshold
         """主执行函数"""
         start_time = time.time()  # 记录开始时间
         
@@ -575,24 +645,16 @@ def register():
     bpy.utils.register_class(DATA_PT_vertex_group_tools)
     bpy.utils.register_class(O_VertexGroupsCount)
     bpy.utils.register_class(O_VertexGroupsDelNoneActive)
+    bpy.utils.register_class(O_VertexGroupsDelAllSelected)
+    bpy.utils.register_class(O_VertexGroupsDelNoneSelected)
     bpy.utils.register_class(O_VertexGroupsMatchRename)
     bpy.utils.register_class(O_VertexGroupsSortMatch)
-
-    bpy.types.Scene.similarity_threshold = bpy.props.FloatProperty(
-        name="相似度",
-        description="匹配顶点组时的最小相似度(0-1)",
-        default=0.94,
-        min=0.9,
-        max=1.0,
-        step=0.01,
-        precision=3
-    )
 
 def unregister():
     bpy.utils.unregister_class(DATA_PT_vertex_group_tools)
     bpy.utils.unregister_class(O_VertexGroupsCount)
     bpy.utils.unregister_class(O_VertexGroupsDelNoneActive)
+    bpy.utils.unregister_class(O_VertexGroupsDelAllSelected)
+    bpy.utils.unregister_class(O_VertexGroupsDelNoneSelected)
     bpy.utils.unregister_class(O_VertexGroupsMatchRename)
     bpy.utils.unregister_class(O_VertexGroupsSortMatch)
-
-    del bpy.types.Scene.similarity_threshold

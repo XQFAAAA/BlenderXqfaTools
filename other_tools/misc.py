@@ -162,20 +162,22 @@ class XQFA_OT_MiniPlane(bpy.types.Operator):
 
 
 class XQFA_OT_RenameComponents(bpy.types.Operator):
+    """将选中物体名称中 C+数字 前缀替换为 Component +数字，同时也对每个物体的材质名执行相同匹配"""
     bl_idname = "xqfa.rename_to_components"
     bl_label = "重命名：C-->Components"
+    bl_description = "匹配格式 C+数字(如C0-body) 替换为 Component +数字(如Component 0.-body)，同时对选中物体的材质名也执行相同匹配"
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
         selected_objects = context.selected_objects
-        
+
         if not selected_objects:
             self.report({'WARNING'}, "未选择任何物体")
             return {'CANCELLED'}
-        
-        # 统计重命名的数量
-        rename_count = 0
-        
+
+        rename_object_count = 0
+        rename_material_count = 0
+
         # 正则表达式解释：
         # ^C : 匹配开头是大写字母 C
         # (\d+) : 匹配并捕获一个或多个数字
@@ -185,22 +187,35 @@ class XQFA_OT_RenameComponents(bpy.types.Operator):
         for obj in selected_objects:
             old_name = obj.name
             match = pattern.match(old_name)
-            
-            if match:
-                number = match.group(1)   # 提取数字，例如 "2"
-                suffix = match.group(2)   # 提取后缀，例如 "-body"
-                
-                # 拼接新名称：Component {数字}.{后缀}
-                new_name = f"Component {number}.{suffix}"
-                
-                obj.name = new_name
-                rename_count += 1
-                print(f"Renamed '{old_name}' -> '{new_name}'")
-            else:
-                # 如果名称不符合 C0, C1 这种格式，则跳过
-                print(f"Skipped '{old_name}' (格式不匹配)")
 
-        self.report({'INFO'}, f"成功重命名 {rename_count} 个物体")
+            if match:
+                number = match.group(1)
+                suffix = match.group(2)
+                new_name = f"Component {number}.{suffix}"
+                obj.name = new_name
+                rename_object_count += 1
+                print(f"Renamed Object '{old_name}' -> '{new_name}'")
+            else:
+                print(f"Skipped Object '{old_name}' (格式不匹配)")
+
+            # 对物体上的所有材质名执行相同匹配
+            if obj.type == 'MESH' and obj.data.materials:
+                for i, mat in enumerate(obj.data.materials):
+                    if mat is None:
+                        continue
+                    old_mat_name = mat.name
+                    mat_match = pattern.match(old_mat_name)
+                    if mat_match:
+                        mat_number = mat_match.group(1)
+                        mat_suffix = mat_match.group(2)
+                        new_mat_name = f"Component {mat_number}.{mat_suffix}"
+                        mat.name = new_mat_name
+                        rename_material_count += 1
+                        print(f"Renamed Material '{old_mat_name}' -> '{new_mat_name}'")
+                    else:
+                        print(f"Skipped Material '{old_mat_name}' (格式不匹配)")
+
+        self.report({'INFO'}, f"成功重命名 {rename_object_count} 个物体, {rename_material_count} 个材质")
         return {'FINISHED'}
     
 class XQFA_OT_ApplyAsShapekey(bpy.types.Operator):
@@ -507,12 +522,29 @@ def calc_smooth_normals(mesh):
 class XQFA_OT_SeparateByMaterial(bpy.types.Operator):
     bl_idname = "xqfa.separate_by_material"
     bl_label = "按材质分离"
-    bl_description = "按材质分离物体，分离的各个物体以{原名}_{材质名}命名"
+    bl_description = "按材质分离物体"
     bl_options = {'REGISTER', 'UNDO'}
+
+    naming_mode: bpy.props.EnumProperty(
+        name="命名方式",
+        items=[
+            ('MATERIAL', "材质名", "使用材质名作为分离后的物体名称"),
+            ('ORIGINAL_MATERIAL', "原名_材质名", "使用{原名}_{材质名}作为分离后的物体名称"),
+        ],
+        default='ORIGINAL_MATERIAL'
+    )
 
     @classmethod
     def poll(cls, context):
         return context.selected_objects is not None and any(obj.type == 'MESH' for obj in context.selected_objects)
+
+    def invoke(self, context, event):
+        wm = context.window_manager
+        return wm.invoke_props_dialog(self, width=220)
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, "naming_mode", expand=True)
 
     def execute(self, context):
         mesh_objects = [obj for obj in context.selected_objects if obj.type == 'MESH']
@@ -542,7 +574,10 @@ class XQFA_OT_SeparateByMaterial(bpy.types.Operator):
             for sep_obj in separated_objs:
                 if sep_obj.type == 'MESH' and sep_obj.data.materials:
                     mat_name = sep_obj.data.materials[0].name
-                    sep_obj.name = f"{original_name}_{mat_name}"
+                    if self.naming_mode == 'MATERIAL':
+                        sep_obj.name = mat_name
+                    else:
+                        sep_obj.name = f"{original_name}_{mat_name}"
 
             total_count += len(separated_objs)
 

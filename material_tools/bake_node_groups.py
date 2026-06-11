@@ -12,6 +12,14 @@ class MultiOutputItem(bpy.types.PropertyGroup):
     is_normal: bpy.props.BoolProperty(name="法线", default=False)
     is_bw: bpy.props.BoolProperty(name="灰度", default=False)
     is_linear: bpy.props.BoolProperty(name="线性", default=True)
+    base_color: bpy.props.FloatVectorProperty(
+        name="底色",
+        subtype='COLOR_GAMMA',
+        size=3,
+        min=0.0,
+        max=1.0,
+        default=(0.0, 0.0, 0.0)
+    )
 
 # --- 新增：通道选择项 ---
 class ChannelConfig(bpy.types.PropertyGroup):
@@ -71,6 +79,14 @@ class PackImageItem(bpy.types.PropertyGroup):
         name="额外参数",
         description="传递给 texconv 的额外命令行参数",
         default="-m 1"
+    )
+    base_color: bpy.props.FloatVectorProperty(
+        name="底色",
+        subtype='COLOR_GAMMA',
+        size=3,
+        min=0.0,
+        max=1.0,
+        default=(0.0, 0.0, 0.0)
     )
     # 为 RGBA 四个通道分别创建配置
     r: bpy.props.PointerProperty(type=ChannelConfig)
@@ -171,6 +187,18 @@ class M_OT_BatchBakeModal(bpy.types.Operator):
         image = bpy.data.images.get(base_name) or bpy.data.images.new(base_name, width=res, height=res)
         image.scale(res, res)
         image.colorspace_settings.name = 'sRGB' if c_space == 'sRGB' else 'Non-Color'
+
+        # 使用输出项的底色填充图像
+        output_item = next((i for i in props.output_items if i.name == item_name), None)
+        if output_item is not None:
+            bc = output_item.base_color
+            num_pixels = res * res
+            px = np.ones(num_pixels * 4, dtype=np.float32)
+            px[0::4] = bc[0]
+            px[1::4] = bc[1]
+            px[2::4] = bc[2]
+            image.pixels = px.tolist()
+
         self._baked_images[item_name] = image # 记录以便后续打包
 
         temp_nodes = [] 
@@ -290,9 +318,13 @@ class M_OT_BatchBakeModal(bpy.types.Operator):
                 bpy.data.images.remove(bpy.data.images[pack_img_name])
             
             pack_img = bpy.data.images.new(pack_img_name, width=res, height=res, alpha=True)
-            
-            # 初始化像素阵列 (R,G,B,A) -> 默认全白 1.0
+
+            # 初始化像素阵列使用配置的底色
+            bc = pack_cfg.base_color
             pixels = np.ones(res * res * 4, dtype=np.float32)
+            pixels[0::4] = bc[0]
+            pixels[1::4] = bc[1]
+            pixels[2::4] = bc[2]
             
             # 依次处理 R, G, B, A 四个通道
             for i, channel_key in enumerate(['r', 'g', 'b', 'a']):
@@ -421,9 +453,9 @@ class M_OT_PackItemManage(bpy.types.Operator):
 # --- 5. UI 面板 ---
 class M_UL_PackList(bpy.types.UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname):
-        # 关键修改：将 label 改为 prop，并设置 emboss=False
-        # 这样在列表中看起来像文字，但点击后可以编辑
-        layout.prop(item, "name", text="", emboss=False, icon='IMAGE_RGB_ALPHA')
+        row = layout.row(align=True)
+        row.prop(item, "name", text="", emboss=False, icon='IMAGE_RGB_ALPHA')
+        row.prop(item, "base_color", text='')
 
             
 class M_PT_BatchBakePanel(bpy.types.Panel):
@@ -454,6 +486,7 @@ class M_PT_BatchBakePanel(bpy.types.Panel):
                 row.prop(item, "is_normal", text='', icon='NORMALS_FACE', toggle=True)
                 row.prop(item, "is_bw", text='', icon='IMAGE_ALPHA', toggle=True)
                 row.prop(item, "is_linear", text='', icon='EVENT_L', toggle=True)
+                row.prop(item, "base_color", text='')
 
         
         # --- 2. 通道打包 (可折叠) ---
@@ -478,6 +511,7 @@ class M_PT_BatchBakePanel(bpy.types.Panel):
                 row = col.row(align=True)
                 col.prop(active_pack, "export_format", text="格式")
                 col.prop(active_pack, "extra_args", text="参数")
+                col.prop(active_pack, "base_color", text="底色")
 
                 for ch_name in ['r', 'g', 'b', 'a']:
                     cfg = getattr(active_pack, ch_name)

@@ -42,15 +42,28 @@ def sync_material_list(scene, obj):
 
 
 def _on_depsgraph_update(scene, depsgraph):
-    """depsgraph 变更后自动同步当前对象的材质列表"""
+    """depsgraph 变更后自动同步当前对象的材质列表（轻量缓存避免重复重建）"""
     obj = None
     for view_layer in scene.view_layers:
         obj = view_layer.objects.active
         if obj is not None:
             break
     if obj is None or obj.type != 'MESH':
+        props = scene.material_batch_rename_props
+        if len(props.material_items) > 0:
+            props.material_items.clear()
         return
     sync_material_list(scene, obj)
+
+
+def _on_load_post(dummy):
+    """文件加载后同步活动对象的材质列表"""
+    scene = bpy.context.scene
+    if scene is None:
+        return
+    obj = bpy.context.active_object
+    if obj is not None and obj.type == 'MESH':
+        sync_material_list(scene, obj)
 
 
 class XQFA_MaterialRenameItem(bpy.types.PropertyGroup):
@@ -541,9 +554,10 @@ class XQFA_PT_material_batch_rename(bpy.types.Panel):
         props = context.scene.material_batch_rename_props
         obj = context.active_object
 
-        sync_material_list(context.scene, obj)
-
-        layout.label(text=f"{obj.name}", icon='MESH_DATA')
+        if obj:
+            layout.label(text=f"{obj.name}", icon='MESH_DATA')
+        else:
+            layout.label(text="未选择对象", icon='MESH_DATA')
 
         box = layout.box()
         row = box.row(align=True)
@@ -590,10 +604,15 @@ def register():
     bpy.types.Scene.material_batch_rename_props = bpy.props.PointerProperty(
         type=XQFA_MaterialBatchRenameProps
     )
-    bpy.app.handlers.depsgraph_update_post.append(_on_depsgraph_update)
+    if _on_depsgraph_update not in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.append(_on_depsgraph_update)
+    if _on_load_post not in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.append(_on_load_post)
 
 
 def unregister():
+    if _on_load_post in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.remove(_on_load_post)
     if _on_depsgraph_update in bpy.app.handlers.depsgraph_update_post:
         bpy.app.handlers.depsgraph_update_post.remove(_on_depsgraph_update)
     del bpy.types.Scene.material_batch_rename_props

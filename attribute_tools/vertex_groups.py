@@ -38,6 +38,10 @@ class DATA_PT_vertex_group_tools(bpy.types.Panel):
         col.operator(O_VertexGroupsMatchRename.bl_idname, text=O_VertexGroupsMatchRename.bl_label, icon="SORTBYEXT")
         col.operator(O_VertexGroupsSortMatch.bl_idname, text=O_VertexGroupsSortMatch.bl_label, icon="SORTSIZE")
 
+        col = layout.column(align=True)
+        col.operator(O_VertexGroupsRangeRename.bl_idname, text=O_VertexGroupsRangeRename.bl_label, icon="SORTBYEXT")
+        col.operator(O_VertexGroupsRangeRestore.bl_idname, text=O_VertexGroupsRangeRestore.bl_label, icon="LOOP_BACK")
+
 
 class O_VertexGroupsCount(bpy.types.Operator):
     bl_idname = "xqfa.vertex_groups_count"
@@ -485,6 +489,68 @@ class O_VertexGroupsMatchRename(bpy.types.Operator):
 # ----------------------------------------------------------------
 # 4. 名称排序操作 (Sort Match Operator) - 💥 优化并增加反馈
 # ----------------------------------------------------------------
+class O_VertexGroupsRangeRename(bpy.types.Operator):
+    bl_idname = "xqfa.vertex_groups_range_rename"
+    bl_label = "range rename"
+    bl_description = "将选中物体的顶点组重命名为 0, 1, 2... 并保存原始名称映射以便还原"
+
+    @classmethod
+    def poll(cls, context):
+        return any(obj.type == 'MESH' and len(obj.vertex_groups) > 0 for obj in context.selected_objects)
+
+    def execute(self, context):
+        total_renamed = 0
+        obj_count = 0
+        for obj in context.selected_objects:
+            if obj.type != 'MESH' or len(obj.vertex_groups) == 0:
+                continue
+            vgs = obj.vertex_groups
+            original_names = [vg.name for vg in vgs]
+            mapping = {}
+            for i, name in enumerate(original_names):
+                new_name = str(i)
+                vgs[name].name = new_name
+                mapping[new_name] = name
+                total_renamed += 1
+            obj["vertex_group_rename_map"] = mapping
+            obj_count += 1
+
+        self.report({'INFO'}, f"已在 {obj_count} 个物体上重命名 {total_renamed} 个顶点组，映射已保存")
+        return {'FINISHED'}
+
+
+class O_VertexGroupsRangeRestore(bpy.types.Operator):
+    bl_idname = "xqfa.vertex_groups_range_restore"
+    bl_label = "restore rename"
+    bl_description = "根据保存的映射还原选中物体顶点组的原始名称"
+
+    @classmethod
+    def poll(cls, context):
+        return any(obj.type == 'MESH' and "vertex_group_rename_map" in obj for obj in context.selected_objects)
+
+    def execute(self, context):
+        total_restored = 0
+        obj_count = 0
+        for obj in context.selected_objects:
+            if obj.type != 'MESH':
+                continue
+            mapping = obj.get("vertex_group_rename_map")
+            if not mapping:
+                continue
+            vgs = obj.vertex_groups
+            for current_name, original_name in mapping.items():
+                vg = vgs.get(current_name)
+                if vg is not None:
+                    vg.name = original_name
+                    total_restored += 1
+            if "vertex_group_rename_map" in obj:
+                del obj["vertex_group_rename_map"]
+            obj_count += 1
+
+        self.report({'INFO'}, f"已在 {obj_count} 个物体上还原 {total_restored} 个顶点组名称")
+        return {'FINISHED'}
+
+
 class O_VertexGroupsSortMatch(bpy.types.Operator):
     bl_idname = "xqfa.vertex_groups_sort_match"
     bl_label = "按名称排序"
@@ -649,6 +715,8 @@ def register():
     bpy.utils.register_class(O_VertexGroupsDelNoneSelected)
     bpy.utils.register_class(O_VertexGroupsMatchRename)
     bpy.utils.register_class(O_VertexGroupsSortMatch)
+    bpy.utils.register_class(O_VertexGroupsRangeRename)
+    bpy.utils.register_class(O_VertexGroupsRangeRestore)
 
 def unregister():
     bpy.utils.unregister_class(DATA_PT_vertex_group_tools)
@@ -658,3 +726,5 @@ def unregister():
     bpy.utils.unregister_class(O_VertexGroupsDelNoneSelected)
     bpy.utils.unregister_class(O_VertexGroupsMatchRename)
     bpy.utils.unregister_class(O_VertexGroupsSortMatch)
+    bpy.utils.unregister_class(O_VertexGroupsRangeRename)
+    bpy.utils.unregister_class(O_VertexGroupsRangeRestore)

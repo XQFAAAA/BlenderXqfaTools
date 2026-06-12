@@ -262,6 +262,264 @@ class XQFA_OT_add_affix(bpy.types.Operator):
         return {'FINISHED'}
 
 
+def _get_source_material(context):
+    """获取当前活动材质（优先从节点编辑器获取，其次从活动材质槽）"""
+    # 从 NODE_EDITOR 的空间获取正在编辑的材质
+    for area in context.screen.areas:
+        if area.type == 'NODE_EDITOR':
+            for space in area.spaces:
+                if space.type == 'NODE_EDITOR' and hasattr(space, 'node_tree'):
+                    nt = space.node_tree
+                    if nt and hasattr(nt, 'is_embedded_data') and nt.is_embedded_data:
+                        mat = bpy.data.materials.get(nt.name)
+                        if mat and mat.node_tree == nt:
+                            return mat
+    # 回退：从活动对象的活动材质槽获取
+    obj = context.active_object
+    if obj and obj.type == 'MESH' and obj.active_material:
+        return obj.active_material
+    return None
+
+
+def _copy_rna_props(src, dst, skip_keys=None):
+    """将 src 节点的属性复制到 dst 节点（基于 RNA 枚举）"""
+    if skip_keys is None:
+        skip_keys = set()
+    for prop in src.bl_rna.properties:
+        if prop.is_readonly or prop.identifier in skip_keys:
+            continue
+        prop_id = prop.identifier
+        try:
+            setattr(dst, prop_id, getattr(src, prop_id))
+        except (AttributeError, TypeError):
+            continue
+
+
+def _copy_selected_nodes(src_mat, dst_mat):
+    """将 src_mat 节点树中选中的节点复制到 dst_mat 的节点树，返回复制的节点数"""
+    if src_mat is None or dst_mat is None or src_mat == dst_mat:
+        return 0
+    if not src_mat.node_tree:
+        return 0
+
+    # 确保目标材质有节点树
+    if not dst_mat.node_tree:
+        dst_mat.use_nodes = True
+
+    src_tree = src_mat.node_tree
+    dst_tree = dst_mat.node_tree
+
+    # 收集选中的节点
+    selected_nodes = [n for n in src_tree.nodes if n.select]
+    if not selected_nodes:
+        return 0
+
+    # 构建节点映射（源节点 -> 目标节点）
+    node_mapping = {}
+
+    for src_node in selected_nodes:
+        # 创建新节点
+        try:
+            new_node = dst_tree.nodes.new(type=src_node.bl_idname)
+        except RuntimeError:
+            continue
+
+        # 复制通用属性
+        _copy_rna_props(
+            src_node, new_node,
+            skip_keys={'bl_idname', 'bl_static_type', 'internal_links',
+                       'inputs', 'outputs', 'select'}
+        )
+
+        # 特殊处理：节点组需要额外设置 node_tree
+        if src_node.bl_idname == 'ShaderNodeGroup' and hasattr(src_node, 'node_tree') and src_node.node_tree:
+            try:
+                new_node.node_tree = src_node.node_tree
+            except (AttributeError, RuntimeError):
+                pass
+
+        # 特殊处理：节点组的内部 sockets 名称/标签
+        # （在 ShaderNodeGroup 中新 node 会自动根据 node_tree 生成 sockets）
+
+        # 设置位置（覆盖可能从 rna 属性复制的值）
+        new_node.location = src_node.location
+        new_node.width = src_node.width
+        new_node.height = src_node.height
+        new_node.mute = src_node.mute
+        new_node.hide = src_node.hide
+        new_node.label = src_node.label
+        new_node.name = src_node.name
+
+        # 处理节点内部每个 socket 的默认值
+        for i, src_socket in enumerate(src_node.inputs):
+            if i >= len(new_node.inputs):
+                break
+            dst_socket = new_node.inputs[i]
+            # 复制默认值（如果 socket 有 'default_value' 属性且可写）
+            if hasattr(src_socket, 'default_value') and hasattr(dst_socket, 'default_value'):
+                try:
+                    if dst_socket.bl_rna.properties.get('default_value') and not dst_socket.bl_rna.properties['default_value'].is_readonly:
+                        dst_socket.default_value = src_socket.default_value
+                except (AttributeError, TypeError, RuntimeError):
+                    pass
+
+        node_mapping[src_node] = new_node
+
+    # 复制节点之间的连线（仅在复制节点之间，且保留原线的 mute 状态）
+    for src_link in src_tree.links:
+        if src_link.from_node in node_mapping and src_link.to_node in node_mapping:
+            # 找出对应的 sockets 索引
+            from_node = node_mapping[src_link.from_node]
+            to_node = node_mapping[src_link.to_node]
+
+            # 用 socket 在节点中的索引匹配
+            try:
+                from_idx = list(src_link.from_node.outputs).index(src_link.from_socket)
+                to_idx = list(src_link.to_node.inputs).index(src_link.to_socket)
+            except ValueError:
+                continue
+
+            if from_idx >= len(from_node.outputs) or to_idx >= len(to_node.inputs):
+                continue
+
+            new_link = dst_tree.links.new(
+                from_node.outputs[from_idx],
+                to_node.inputs[to_idx],
+                verify_limits=False
+            )
+            if hasattr(src_link, 'is_muted'):
+                new_link.is_muted = src_link.is_muted
+
+    return len(node_mapping)
+
+
+class XQFA_OT_copy_nodes_to_materials(bpy.types.Operator):
+    """将当前活动材质节点树中选中的节点复制到所有选中的材质"""
+    bl_idname = "xqfa.copy_nodes_to_materials"
+    bl_label = "复制选中节点到材质"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        props = context.scene.material_batch_rename_props
+        # 有勾选的材质项
+        if not any(item.selected for item in props.material_items):
+            return False
+        # 有源材质
+        src_mat = _get_source_material(context)
+        if src_mat is None or not src_mat.node_tree:
+            return False
+        return any(n.select for n in src_mat.node_tree.nodes)
+
+    def execute(self, context):
+        props = context.scene.material_batch_rename_props
+        src_mat = _get_source_material(context)
+
+        if src_mat is None or not src_mat.node_tree:
+            self.report({'WARNING'}, "找不到活动材质，或活动材质无节点树")
+            return {'CANCELLED'}
+
+        selected_nodes = [n for n in src_mat.node_tree.nodes if n.select]
+        if not selected_nodes:
+            self.report({'WARNING'}, "在活动材质中没有选中的节点")
+            return {'CANCELLED'}
+
+        target_count = 0
+        total_nodes = 0
+        for item in props.material_items:
+            if not item.selected:
+                continue
+            dst_mat = bpy.data.materials.get(item.name)
+            if dst_mat is None or dst_mat == src_mat:
+                continue
+            n = _copy_selected_nodes(src_mat, dst_mat)
+            if n > 0:
+                total_nodes += n
+                target_count += 1
+
+        if target_count == 0:
+            self.report({'WARNING'}, "没有可作为目标的选中材质")
+            return {'CANCELLED'}
+
+        self.report({'INFO'}, f"已复制 {len(selected_nodes)} 个节点到 {target_count} 个材质（共 {total_nodes} 节点）")
+        return {'FINISHED'}
+
+
+def _delete_matched_nodes(src_mat, dst_mat):
+    """从 dst_mat 中删除与 src_mat 选中节点同名的节点，返回删除数量"""
+    if src_mat is None or dst_mat is None or src_mat == dst_mat:
+        return 0
+    if not src_mat.node_tree or not dst_mat.node_tree:
+        return 0
+
+    # 收集源材质中选中节点的名称集合
+    src_selected_names = {n.name for n in src_mat.node_tree.nodes if n.select}
+    if not src_selected_names:
+        return 0
+
+    dst_tree = dst_mat.node_tree
+    deleted = 0
+    # 收集待删除节点（不在遍历时删除，避免迭代器问题）
+    to_remove = [n for n in dst_tree.nodes if n.name in src_selected_names]
+    for n in to_remove:
+        try:
+            dst_tree.nodes.remove(n)
+            deleted += 1
+        except (RuntimeError, TypeError):
+            continue
+    return deleted
+
+
+class XQFA_OT_delete_nodes_from_materials(bpy.types.Operator):
+    """将与活动材质选中节点同名的节点从所有选中材质中删除"""
+    bl_idname = "xqfa.delete_nodes_from_materials"
+    bl_label = "从材质中删除选中节点"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        props = context.scene.material_batch_rename_props
+        if not any(item.selected for item in props.material_items):
+            return False
+        src_mat = _get_source_material(context)
+        if src_mat is None or not src_mat.node_tree:
+            return False
+        return any(n.select for n in src_mat.node_tree.nodes)
+
+    def execute(self, context):
+        props = context.scene.material_batch_rename_props
+        src_mat = _get_source_material(context)
+
+        if src_mat is None or not src_mat.node_tree:
+            self.report({'WARNING'}, "找不到活动材质，或活动材质无节点树")
+            return {'CANCELLED'}
+
+        selected_nodes = [n for n in src_mat.node_tree.nodes if n.select]
+        if not selected_nodes:
+            self.report({'WARNING'}, "在活动材质中没有选中的节点")
+            return {'CANCELLED'}
+
+        target_count = 0
+        total_deleted = 0
+        for item in props.material_items:
+            if not item.selected:
+                continue
+            dst_mat = bpy.data.materials.get(item.name)
+            if dst_mat is None or dst_mat == src_mat:
+                continue
+            n = _delete_matched_nodes(src_mat, dst_mat)
+            if n > 0:
+                total_deleted += n
+                target_count += 1
+
+        if target_count == 0:
+            self.report({'WARNING'}, "没有可作为目标的选中材质，或目标材质中无匹配节点")
+            return {'CANCELLED'}
+
+        self.report({'INFO'}, f"已从 {target_count} 个材质中删除共 {total_deleted} 个节点")
+        return {'FINISHED'}
+
+
 class XQFA_MaterialBatchRenameProps(bpy.types.PropertyGroup):
     """材质批量重命名面板属性"""
     material_items: bpy.props.CollectionProperty(type=XQFA_MaterialRenameItem)
@@ -269,7 +527,7 @@ class XQFA_MaterialBatchRenameProps(bpy.types.PropertyGroup):
 
 
 class XQFA_PT_material_batch_rename(bpy.types.Panel):
-    bl_label = "材质批量重命名"
+    bl_label = "材质批量"
     bl_space_type = 'NODE_EDITOR'
     bl_region_type = 'UI'
     bl_category = 'XQFA'
@@ -291,6 +549,8 @@ class XQFA_PT_material_batch_rename(bpy.types.Panel):
         row = box.row(align=True)
         row.operator("xqfa.batch_rename_materials", text=" ", icon='ZOOM_SELECTED')
         row.operator("xqfa.add_material_affix", text=" ", icon='SORTALPHA')
+        row.operator("xqfa.copy_nodes_to_materials", text=" ", icon='PASTEDOWN')
+        row.operator("xqfa.delete_nodes_from_materials", text=" ", icon='X')
         row.operator("xqfa.select_all_materials", text=" ", icon='CHECKBOX_HLT')
         row.operator("xqfa.deselect_all_materials", text=" ", icon='CHECKBOX_DEHLT')
         row.operator("xqfa.invert_material_selection", text=" ", icon='ARROW_LEFTRIGHT')
@@ -318,6 +578,8 @@ classes = (
     XQFA_OT_invert_material_selection,
     XQFA_OT_batch_rename_materials,
     XQFA_OT_add_affix,
+    XQFA_OT_copy_nodes_to_materials,
+    XQFA_OT_delete_nodes_from_materials,
     XQFA_PT_material_batch_rename,
 )
 

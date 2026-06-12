@@ -15,10 +15,10 @@ class MultiOutputItem(bpy.types.PropertyGroup):
     base_color: bpy.props.FloatVectorProperty(
         name="底色",
         subtype='COLOR_GAMMA',
-        size=3,
+        size=4,
         min=0.0,
         max=1.0,
-        default=(0.0, 0.0, 0.0)
+        default=(0.0, 0.0, 0.0, 1.0)
     )
 
 # --- 新增：通道选择项 ---
@@ -83,10 +83,10 @@ class PackImageItem(bpy.types.PropertyGroup):
     base_color: bpy.props.FloatVectorProperty(
         name="底色",
         subtype='COLOR_GAMMA',
-        size=3,
+        size=4,
         min=0.0,
         max=1.0,
-        default=(0.0, 0.0, 0.0)
+        default=(0.0, 0.0, 0.0, 1.0)
     )
     # 为 RGBA 四个通道分别创建配置
     r: bpy.props.PointerProperty(type=ChannelConfig)
@@ -197,6 +197,7 @@ class M_OT_BatchBakeModal(bpy.types.Operator):
             px[0::4] = bc[0]
             px[1::4] = bc[1]
             px[2::4] = bc[2]
+            px[3::4] = bc[3]
             image.pixels = px.tolist()
 
         self._baked_images[item_name] = image # 记录以便后续打包
@@ -325,6 +326,7 @@ class M_OT_BatchBakeModal(bpy.types.Operator):
             pixels[0::4] = bc[0]
             pixels[1::4] = bc[1]
             pixels[2::4] = bc[2]
+            pixels[3::4] = bc[3]
             
             # 依次处理 R, G, B, A 四个通道
             for i, channel_key in enumerate(['r', 'g', 'b', 'a']):
@@ -458,6 +460,85 @@ class M_UL_PackList(bpy.types.UIList):
         row.prop(item, "base_color", text='')
 
             
+def _collect_interface_defaults(ng):
+    """收集节点组所有输入接口的默认值，返回 {socket_identifier: default_value} 字典"""
+    defaults = {}
+    for item in ng.interface.items_tree:
+        if item.in_out != 'INPUT':
+            continue
+        try:
+            defaults[item.identifier] = item.default_value
+        except (AttributeError, TypeError):
+            continue
+    return defaults
+
+
+def _reset_node_instances(ng, interface_defaults):
+    """遍历所有材质中该节点组的实例，将输入值重置为接口默认值。返回 (节点数, 接口数)"""
+    if ng is None or not interface_defaults:
+        return 0, 0
+    node_count = 0
+    socket_count = 0
+    for mat in bpy.data.materials:
+        if not mat.node_tree:
+            continue
+        for node in mat.node_tree.nodes:
+            if node.type != 'GROUP' or node.node_tree != ng:
+                continue
+            node_count += 1
+            for sock in node.inputs:
+                default = interface_defaults.get(sock.identifier)
+                if default is not None:
+                    try:
+                        sock.default_value = default
+                        socket_count += 1
+                    except (AttributeError, TypeError, RuntimeError):
+                        continue
+    return node_count, socket_count
+
+
+class M_OT_ResetNodeGroupDefaults(bpy.types.Operator):
+    """将节点组接口的默认值应用到所有材质中的实例节点输入上"""
+    bl_idname = "object.reset_node_group_defaults"
+    bl_label = "重置输入默认值"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        props = context.scene.batch_bake_props
+        return bool(props.target_group)
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self, width=300)
+
+    def draw(self, context):
+        props = context.scene.batch_bake_props
+        layout = self.layout
+        layout.label(text=f"将 \"{props.target_group}\" 的接口默认值")
+        layout.label(text="应用到所有材质中的实例节点输入")
+
+    def execute(self, context):
+        props = context.scene.batch_bake_props
+        ng_name = props.target_group
+        if not ng_name:
+            self.report({'WARNING'}, "未选择节点组")
+            return {'CANCELLED'}
+
+        ng = bpy.data.node_groups.get(ng_name)
+        if ng is None:
+            self.report({'WARNING'}, f"找不到节点组: {ng_name}")
+            return {'CANCELLED'}
+
+        defaults = _collect_interface_defaults(ng)
+        if not defaults:
+            self.report({'WARNING'}, "节点组无输入接口")
+            return {'CANCELLED'}
+
+        nodes, sockets = _reset_node_instances(ng, defaults)
+        self.report({'INFO'}, f"已应用默认值到 {nodes} 个实例节点的 {sockets} 个输入")
+        return {'FINISHED'}
+
+
 class M_PT_BatchBakePanel(bpy.types.Panel):
     bl_label = "节点组烘焙"
     bl_idname = "M_PT_batch_bake_panel"
@@ -469,7 +550,9 @@ class M_PT_BatchBakePanel(bpy.types.Panel):
         layout = self.layout
         props = context.scene.batch_bake_props
         
-        layout.prop_search(props, "target_group", bpy.data, "node_groups", text="")
+        row = layout.row(align=True)
+        row.prop_search(props, "target_group", bpy.data, "node_groups", text="")
+        row.operator("object.reset_node_group_defaults", text="", icon='FILE_REFRESH')
 
         # --- 1. 选择输出端口 (可折叠) ---
         box = layout.box()
@@ -511,7 +594,6 @@ class M_PT_BatchBakePanel(bpy.types.Panel):
                 row = col.row(align=True)
                 col.prop(active_pack, "export_format", text="格式")
                 col.prop(active_pack, "extra_args", text="参数")
-                col.prop(active_pack, "base_color", text="底色")
 
                 for ch_name in ['r', 'g', 'b', 'a']:
                     cfg = getattr(active_pack, ch_name)
@@ -546,6 +628,7 @@ classes = (
     BatchBakeProperties,
     M_OT_BatchBakeModal,
     M_OT_PackItemManage,
+    M_OT_ResetNodeGroupDefaults,
     M_UL_PackList,
     M_PT_BatchBakePanel,
 )

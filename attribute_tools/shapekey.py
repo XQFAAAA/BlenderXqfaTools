@@ -23,6 +23,7 @@ class DATA_PT_shape_key_tools(bpy.types.Panel):
         col.operator(O_ShapeKeysRenameByOrder.bl_idname, text=O_ShapeKeysRenameByOrder.bl_label, icon="SORTALPHA")
         col.separator()
         col.operator(O_ShapeKeysSelectAffectedVertices.bl_idname, text=O_ShapeKeysSelectAffectedVertices.bl_label, icon="VERTEXSEL")
+        col.operator(O_ShapeKeysClean.bl_idname, text=O_ShapeKeysClean.bl_label, icon="BRUSH_DATA")
         col.operator(O_ShapeKeysTransfer.bl_idname, text=O_ShapeKeysTransfer.bl_label, icon="SHAPEKEY_DATA")
 
 class O_ShapeKeysMatchRename(bpy.types.Operator):
@@ -556,6 +557,115 @@ class O_ShapeKeysSelectAffectedVertices(bpy.types.Operator):
         }
 
 
+class O_ShapeKeysClean(bpy.types.Operator):
+    bl_idname = "xqfa.shape_keys_clean"
+    bl_label = "清理形态键"
+    bl_description = ("删除所有不影响任何顶点的形态键（与基础形态键无差异的形态键）\n"
+                     "仅保留有实际顶点偏移的形态键")
+
+    clean_threshold: bpy.props.FloatProperty(
+        name="阈值",
+        description="顶点位置差异的最小阈值（米），低于此值视为无影响",
+        default=0.0001,
+        min=0.0,
+        step=0.0001,
+        precision=5
+    )
+
+    def invoke(self, context, event):
+        wm = context.window_manager
+        return wm.invoke_props_dialog(self, width=200)
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, "clean_threshold")
+
+    def execute(self, context):
+        try:
+            obj = context.active_object
+
+            if not obj or obj.type != 'MESH':
+                self.report({'ERROR'}, "请选择一个网格物体")
+                return {'CANCELLED'}
+
+            if not obj.data.shape_keys:
+                self.report({'ERROR'}, "物体没有形态键")
+                return {'CANCELLED'}
+
+            if not obj.data.shape_keys.use_relative:
+                self.report({'ERROR'}, "仅支持相对形态键")
+                return {'CANCELLED'}
+
+            result = self._clean_empty_shape_keys(obj, self.clean_threshold)
+
+            if result['removed'] > 0:
+                self.report({'INFO'},
+                           f"已删除 {result['removed']} 个无效形态键，"
+                           f"保留 {result['kept']} 个有效形态键")
+            else:
+                self.report({'INFO'}, "所有形态键均有效，无需清理")
+
+            # 打印详细结果
+            if result['removed_names']:
+                print(f"\n形态键清理结果 [{obj.name}]:")
+                for name in result['removed_names']:
+                    print(f"  ✕ {name} (已删除)")
+                for name in result['kept_names']:
+                    print(f"  ✓ {name} (保留)")
+
+            return {'FINISHED'}
+
+        except Exception as e:
+            self.report({'ERROR'}, str(e))
+            return {'CANCELLED'}
+
+    def _clean_empty_shape_keys(self, obj, threshold):
+        """删除与基础形态键无差异的形态键"""
+        mesh = obj.data
+        shape_keys = mesh.shape_keys
+        key_blocks = shape_keys.key_blocks
+        base_key = key_blocks[0]  # Basis
+
+        total_verts = len(mesh.vertices)
+
+        # 获取基础形态键顶点坐标
+        base_coords = np.zeros(total_verts * 3)
+        base_key.data.foreach_get('co', base_coords)
+        base_coords = base_coords.reshape(-1, 3)
+
+        # 收集需要删除的形态键名称（从后往前收集，避免删除时索引变化）
+        removed_names = []
+        kept_names = []
+
+        for sk in key_blocks:
+            if sk == sk.relative_key:
+                kept_names.append(sk.name)
+                continue
+
+            sk_coords = np.zeros(total_verts * 3)
+            sk.data.foreach_get('co', sk_coords)
+            sk_coords = sk_coords.reshape(-1, 3)
+
+            diffs = np.linalg.norm(sk_coords - base_coords, axis=1)
+            max_diff = np.max(diffs)
+
+            if max_diff <= threshold:
+                removed_names.append(sk.name)
+            else:
+                kept_names.append(sk.name)
+
+        # 从后往前删除，避免索引变化问题
+        for name in reversed(removed_names):
+            obj.shape_key_remove(key_blocks[name])
+
+        return {
+            'removed': len(removed_names),
+            'kept': len(kept_names),
+            'removed_names': removed_names,
+            'kept_names': kept_names,
+        }
+
+
 class O_ShapeKeysTransfer(bpy.types.Operator):
     bl_idname = "xqfa.shape_keys_transfer"
     bl_label = "传递形态键"
@@ -626,6 +736,7 @@ def register():
     bpy.utils.register_class(O_ShapeKeysSortMatch)
     bpy.utils.register_class(O_ShapeKeysRenameByOrder)
     bpy.utils.register_class(O_ShapeKeysSelectAffectedVertices)
+    bpy.utils.register_class(O_ShapeKeysClean)
     bpy.utils.register_class(O_ShapeKeysTransfer)
 
 def unregister():
@@ -634,4 +745,5 @@ def unregister():
     bpy.utils.unregister_class(O_ShapeKeysSortMatch)
     bpy.utils.unregister_class(O_ShapeKeysRenameByOrder)
     bpy.utils.unregister_class(O_ShapeKeysSelectAffectedVertices)
+    bpy.utils.unregister_class(O_ShapeKeysClean)
     bpy.utils.unregister_class(O_ShapeKeysTransfer)

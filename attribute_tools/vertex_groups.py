@@ -196,10 +196,9 @@ class O_VertexGroupsDelNoneSelected(bpy.types.Operator):
 # 3. 匹配重命名操作 (Match Rename Operator) - 💥 优化
 # ----------------------------------------------------------------
 class O_VertexGroupsMatchRename(bpy.types.Operator):
+    """选择物体的顶点组名称-->活动物体的顶点组名称，按顶点平均位置匹配"""
     bl_idname = "xqfa.vertex_groups_match_rename"
-    bl_label = "匹配重命名"
-    bl_description = ("基于顶点平均位置匹配重命名活动物体的顶点组（需选择2个网格物体）\n"
-                     "我用来给鸣潮提取的模型按解包的模型骨骼重命名，这样顶点组有名称意义也可以操控")
+    bl_label = "顶点组名称匹配重命名"
 
     similarity_threshold: bpy.props.FloatProperty(
         name="相似度",
@@ -552,50 +551,56 @@ class O_VertexGroupsRangeRestore(bpy.types.Operator):
 
 
 class O_VertexGroupsSortMatch(bpy.types.Operator):
+    """活动物体的顶点组顺序-->选择物体的顶点组顺序"""
     bl_idname = "xqfa.vertex_groups_sort_match"
-    bl_label = "按名称排序"
-    bl_description = ("严格按照选择物体的顶点组顺序重新排列活动物体的顶点组\n"
-                     "使用高效算法：保存权重 -> 清空 -> 按顺序重建/恢复权重")
+    bl_label = "顶点组顺序复制到选定项"
 
     def execute(self, context):
         start_time = time.time()  # 记录开始时间
-        
+
         try:
             selected_objs = context.selected_objects
             active_obj = context.active_object
-            
-            # 验证选择
-            if len(selected_objs) != 2:
-                raise ValueError("请选择2个网格物体")
-                
-            if active_obj not in selected_objs:
-                raise ValueError("活动物体必须是选中的物体之一")
-                
-            source_obj = next(obj for obj in selected_objs if obj != active_obj)
-            target_obj = active_obj
 
-            if source_obj.type != 'MESH' or target_obj.type != 'MESH':
-                raise ValueError("两个物体都必须是网格类型")
-            
+            # 验证选择
+            if active_obj is None or active_obj not in selected_objs:
+                raise ValueError("请确保活动物体在选中物体中")
+
+            if len(selected_objs) < 2:
+                raise ValueError("请至少选择2个网格物体")
+
+            source_obj = active_obj
+            target_objs = [obj for obj in selected_objs if obj != active_obj]
+
+            if source_obj.type != 'MESH':
+                raise ValueError("活动物体必须是网格类型")
+
+            non_mesh = [obj.name for obj in target_objs if obj.type != 'MESH']
+            if non_mesh:
+                raise ValueError(f"以下目标物体不是网格类型: {', '.join(non_mesh)}")
+
             # 确保处于对象模式以操作顶点组
             if context.mode != 'OBJECT':
                  raise ValueError("请切换到对象模式 (Object Mode)")
-            
-            # 执行排序
-            result = self._sort_vertex_groups_optimized(target_obj, source_obj)
-            
-            # 打印详细结果到控制台
-            self._print_detailed_results(source_obj, target_obj, result)
-            
+
+            # 对每个目标物体执行排序
+            total_matched = 0
+            total_added = 0
+            for target_obj in target_objs:
+                result = self._sort_vertex_groups_optimized(target_obj, source_obj)
+                total_matched += result['matched']
+                total_added += result['added']
+                self._print_detailed_results(source_obj, target_obj, result)
+
             # 计算总耗时
             elapsed_time = time.time() - start_time
             time_msg = f"总耗时: {elapsed_time:.4f}秒"
-            
-            self.report({'INFO'}, 
-                       f"排序完成: 匹配 {result['matched']}个, 新建 {result['added']}个 ({time_msg})")
-            
+
+            self.report({'INFO'},
+                       f"排序完成: {len(target_objs)}个目标物体, 匹配 {total_matched}个, 新建 {total_added}个 ({time_msg})")
+
             return {'FINISHED'}
-            
+
         except Exception as e:
             elapsed_time = time.time() - start_time
             self.report({'ERROR'}, f"{str(e)} (耗时: {elapsed_time:.4f}秒)")

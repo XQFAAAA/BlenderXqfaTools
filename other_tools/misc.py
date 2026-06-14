@@ -40,6 +40,7 @@ class XQFA_PT_Demo(bpy.types.Panel):
         col.operator(XQFA_OT_RenameComponents.bl_idname, icon="OUTLINER_OB_EMPTY")
         col.operator(XQFA_OT_SeparateByMaterial.bl_idname, icon="MATERIAL")
         col.operator(XQFA_OT_OctahedralUV.bl_idname, icon='UV')
+        col.operator(XQFA_OT_ScaleUVIslands.bl_idname, icon='UV_DATA')
         col.operator(XQFA_OT_SelectWithChildren.bl_idname, icon='RESTRICT_SELECT_OFF')
         col.separator()
         col.operator(XQFA_OT_SelectMoreThan4.bl_idname, icon='CON_KINEMATIC')
@@ -941,6 +942,150 @@ class XQFA_OT_SelectWithChildren(bpy.types.Operator):
             self.report({'WARNING'}, "没有找到可选择的对象")
             return {'CANCELLED'}
 
+class XQFA_OT_ScaleUVIslands(bpy.types.Operator):
+    """将选中物体的活动UV中每个孤岛缩放至0-1范围"""
+    bl_idname = "xqfa.scale_uv_islands"
+    bl_label = "UV孤岛归一化"
+    bl_description = "将选中物体的活动UV中每个孤岛独立缩放至0-1范围"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.selected_objects is not None and len(context.selected_objects) > 0
+
+    @staticmethod
+    def get_uv_island_bbox(uv_layer, loop_indices):
+        """计算一个UV孤岛的边界框，返回(min_u, min_v, max_u, max_v)"""
+        min_u = float('inf')
+        min_v = float('inf')
+        max_u = float('-inf')
+        max_v = float('-inf')
+
+        for loop_idx in loop_indices:
+            uv = uv_layer.data[loop_idx].uv
+            if uv.x < min_u:
+                min_u = uv.x
+            if uv.y < min_v:
+                min_v = uv.y
+            if uv.x > max_u:
+                max_u = uv.x
+            if uv.y > max_v:
+                max_v = uv.y
+
+        return min_u, min_v, max_u, max_v
+
+    @staticmethod
+    def scale_island_to_01(uv_layer, loop_indices, min_u, min_v, max_u, max_v):
+        """将一个UV孤岛缩放并平移至0-1范围"""
+        range_u = max_u - min_u
+        range_v = max_v - min_v
+
+        # 避免除以零
+        if range_u < 1e-8:
+            range_u = 1.0
+        if range_v < 1e-8:
+            range_v = 1.0
+
+        for loop_idx in loop_indices:
+            uv = uv_layer.data[loop_idx].uv
+            uv.x = (uv.x - min_u) / range_u
+            uv.y = (uv.y - min_v) / range_v
+
+    def execute(self, context):
+        selected_objects = [obj for obj in context.selected_objects if obj.type == 'MESH']
+
+        if not selected_objects:
+            self.report({'WARNING'}, "未选中任何网格物体")
+            return {'CANCELLED'}
+
+        total_islands = 0
+
+        for obj in selected_objects:
+            mesh = obj.data
+            uv_layer = mesh.uv_layers.active
+
+            if uv_layer is None:
+                self.report({'WARNING'}, f"物体 {obj.name} 没有活动UV层，已跳过")
+                continue
+
+            # 收集UV孤岛：通过面的连接性分组
+            # 使用并查集(Union-Find)来识别UV孤岛
+            num_loops = len(mesh.loops)
+            parent = list(range(num_loops))
+
+            def find(x):
+                while parent[x] != x:
+                    parent[x] = parent[parent[x]]
+                    x = parent[x]
+                return x
+
+            def union(a, b):
+                ra, rb = find(a), find(b)
+                if ra != rb:
+                    parent[ra] = rb
+
+            # 同一个面的loop属于同一孤岛
+            for poly in mesh.polygons:
+                loops = list(range(poly.loop_start, poly.loop_start + poly.loop_total))
+                for i in range(len(loops) - 1):
+                    union(loops[i], loops[i + 1])
+
+            # 共享相同UV坐标（同一顶点+相同UV位置）的loop也属于同一孤岛
+            # 按顶点索引分组
+            vert_loops = {}
+            for loop in mesh.loops:
+                vi = loop.vertex_index
+                if vi not in vert_loops:
+                    vert_loops[vi] = []
+                vert_loops[vi].append(loop.index)
+
+            for vi, loop_ids in vert_loops.items():
+                # 按UV位置分组（容差比较）
+                groups = []
+                for lid in loop_ids:
+                    uv = uv_layer.data[lid].uv
+                    placed = False
+                    for group in groups:
+                        ref_uv = uv_layer.data[group[0]].uv
+                        if abs(uv.x - ref_uv.x) < 1e-6 and abs(uv.y - ref_uv.y) < 1e-6:
+                            group.append(lid)
+                            placed = True
+                            break
+                    if not placed:
+                        groups.append([lid])
+                # 同一UV位置的loops属于同一孤岛
+                for group in groups:
+                    for i in range(len(group) - 1):
+                        union(group[i], group[i + 1])
+
+            # 按根节点分组得到孤岛
+            islands = {}
+            for i in range(num_loops):
+                root = find(i)
+                if root not in islands:
+                    islands[root] = []
+                islands[root].append(i)
+
+            # 对每个孤岛计算边界框并缩放至0-1
+            obj_island_count = 0
+            for root, loop_indices in islands.items():
+                min_u, min_v, max_u, max_v = self.get_uv_island_bbox(uv_layer, loop_indices)
+                # 跳过退化的孤岛
+                if (max_u - min_u) < 1e-8 and (max_v - min_v) < 1e-8:
+                    continue
+                self.scale_island_to_01(uv_layer, loop_indices, min_u, min_v, max_u, max_v)
+                obj_island_count += 1
+
+            total_islands += obj_island_count
+
+        if total_islands > 0:
+            self.report({'INFO'}, f"已将 {total_islands} 个UV孤岛缩放至0-1范围")
+            return {'FINISHED'}
+        else:
+            self.report({'WARNING'}, "未找到可处理的UV孤岛")
+            return {'CANCELLED'}
+
+
 classes = (
     XQFA_PT_Demo,
     XQFA_OT_NumberToBone,
@@ -954,6 +1099,7 @@ classes = (
     XQFA_OT_SelectLessThan4,
     XQFA_OT_SelectNegativeX,
     XQFA_OT_UndoTriSubdivide,
+    XQFA_OT_ScaleUVIslands,
 )
 
 def register():

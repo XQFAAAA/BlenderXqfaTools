@@ -4,6 +4,31 @@ import numpy as np
 import time
 from typing import Dict, Tuple, Set, List, Optional
 
+class XqfaShapeKeyPairItem(bpy.types.PropertyGroup):
+    left_name: bpy.props.StringProperty(name="左")
+    right_name: bpy.props.StringProperty(name="右")
+    similarity: bpy.props.StringProperty(name="相似度", default="")
+
+
+class XqfaShapeKeyMappingItem(bpy.types.PropertyGroup):
+    expanded: bpy.props.BoolProperty(name="展开", default=False)
+    label: bpy.props.StringProperty(name="标题")
+    pairs: bpy.props.CollectionProperty(type=XqfaShapeKeyPairItem)
+    active_pair_index: bpy.props.IntProperty(default=0)
+
+
+class SKPairList(bpy.types.UIList):
+    def draw_item(self, context, layout, data, item, icon, active_data, active_propname):
+        if self.layout_type in {'DEFAULT', 'COMPACT'}:
+            row = layout.row(align=True)
+            row.label(text=item.left_name)
+            row.label(text="↔")
+            row.label(text=item.right_name)
+        elif self.layout_type in {'GRID'}:
+            layout.alignment = 'CENTER'
+            layout.label(text="")
+
+
 class DATA_PT_shape_key_tools(bpy.types.Panel):
     bl_label = "形态键"
     bl_space_type = 'VIEW_3D'
@@ -12,7 +37,6 @@ class DATA_PT_shape_key_tools(bpy.types.Panel):
 
     @classmethod
     def poll(cls, context):
-        # 只有当主面板激活了此子面板时才显示
         return getattr(context.scene, 'active_xbone_subpanel', '') == 'AttributeTools'
 
     def draw(self, context):
@@ -25,6 +49,57 @@ class DATA_PT_shape_key_tools(bpy.types.Panel):
         col.operator(O_ShapeKeysSelectAffectedVertices.bl_idname, text=O_ShapeKeysSelectAffectedVertices.bl_label, icon="VERTEXSEL")
         col.operator(O_ShapeKeysClean.bl_idname, text=O_ShapeKeysClean.bl_label, icon="BRUSH_DATA")
         col.operator(O_ShapeKeysTransfer.bl_idname, text=O_ShapeKeysTransfer.bl_label, icon="SHAPEKEY_DATA")
+
+        self._draw_mappings(context)
+
+    def _draw_mappings(self, context):
+        scene = context.scene
+        mappings = getattr(scene, 'xqfa_shape_key_mappings', None)
+        if mappings is None:
+            return
+        if len(mappings) == 0:
+            return
+        layout = self.layout
+        layout.separator()
+        box = layout.box()
+        box.label(text="映射记录", icon="COLLAPSEMENU")
+        for idx, item in enumerate(mappings):
+            row = box.row(align=True)
+            col_exp = row.column(align=True)
+            sub = col_exp.row(align=True)
+            icon = "TRIA_DOWN" if item.expanded else "TRIA_RIGHT"
+            sub.prop(item, "expanded", icon=icon, icon_only=True, emboss=False)
+            if not item.label:
+                item.label = f"映射 {idx + 1}"
+            sub.prop(item, "label", text="")
+            sub.label(text=f"({len(item.pairs)}项)")
+            col_btns = row.column(align=True)
+            col_btns.alignment = 'RIGHT'
+            btns = col_btns.row(align=True)
+            op_lr = btns.operator(O_ShapeKeyMappingApply.bl_idname, text="→")
+            op_lr.index = idx
+            op_lr.direction = "LEFT_TO_RIGHT"
+            op_rl = btns.operator(O_ShapeKeyMappingApply.bl_idname, text="←")
+            op_rl.index = idx
+            op_rl.direction = "RIGHT_TO_LEFT"
+            op_l_order = btns.operator(O_ShapeKeyMappingReorder.bl_idname, text="L↓")
+            op_l_order.index = idx
+            op_l_order.direction = "LEFT"
+            op_r_order = btns.operator(O_ShapeKeyMappingReorder.bl_idname, text="R↓")
+            op_r_order.index = idx
+            op_r_order.direction = "RIGHT"
+            btns.operator(O_ShapeKeyMappingRemove.bl_idname, text="", icon="X").index = idx
+            if item.expanded:
+                box.template_list(
+                    "SKPairList",
+                    f"sk_pairs_{idx}",
+                    item,
+                    "pairs",
+                    item,
+                    "active_pair_index",
+                    type='DEFAULT',
+                )
+
 
 class O_ShapeKeysMatchRename(bpy.types.Operator):
     bl_idname = "xqfa.shape_keys_match_rename"
@@ -52,31 +127,45 @@ class O_ShapeKeysMatchRename(bpy.types.Operator):
 
     def execute(self, context: bpy.types.Context) -> Set[str]:
         start_time = time.time()
-        
+
         try:
-            # 验证输入并获取目标物体
             obj_a, obj_b = self._validate_input(context)
-            
-            # 执行匹配重命名并获取详细结果
+
             result = self._rename_matching_shape_keys(obj_a, obj_b)
-            
-            # 打印详细结果到控制台
+
             self._print_detailed_results(obj_a, obj_b, result)
-            
+
+            self._store_mapping(context, obj_a, obj_b, result)
+
             elapsed_time = time.time() - start_time
             time_msg = f"总耗时: {elapsed_time:.2f}秒"
-            
+
             if result['renamed_count'] > 0:
                 self.report({'INFO'}, f"成功匹配重命名 {result['renamed_count']} 个形态键 ({time_msg})")
             else:
                 self.report({'WARNING'}, f"没有找到匹配的形态键 ({time_msg})")
-                
+
             return {'FINISHED'}
-            
+
         except Exception as e:
             elapsed_time = time.time() - start_time
             self.report({'ERROR'}, f"{str(e)} (耗时: {elapsed_time:.2f}秒)")
             return {'CANCELLED'}
+
+    def _store_mapping(self, context, obj_a, obj_b, result):
+        scene = context.scene
+        if not hasattr(scene, 'xqfa_shape_key_mappings'):
+            return
+        mappings = scene.xqfa_shape_key_mappings
+        item = mappings.add()
+        item.label = f"映射 {len(mappings)}"
+        item.expanded = False
+        pair_items = result.get('pair_items', [])
+        for left_name, right_name, similarity in pair_items:
+            p = item.pairs.add()
+            p.left_name = left_name
+            p.right_name = right_name
+            p.similarity = similarity
     
     def _validate_input(self, context: bpy.types.Context) -> Tuple[bpy.types.Object, bpy.types.Object]:
         """验证输入并返回两个有形态键的网格物体"""
@@ -137,78 +226,93 @@ class O_ShapeKeysMatchRename(bpy.types.Operator):
         distance = np.linalg.norm(pos_a - pos_b)
         return 1.0 / (1.0 + distance)
     
-    def _rename_matching_shape_keys(self, 
-                                  obj_a: bpy.types.Object, 
+    def _rename_matching_shape_keys(self,
+                                  obj_a: bpy.types.Object,
                                   obj_b: bpy.types.Object) -> Dict[str, any]:
         """匹配并重命名形态键"""
         centers_a = self._get_shape_key_centers(obj_a)
         centers_b = self._get_shape_key_centers(obj_b)
-        
+
         if not centers_a:
             raise Exception("A物体没有可用的形态键（只有基础形态键）")
         if not centers_b:
             raise Exception("B物体没有可用的形态键（只有基础形态键）")
-        
-        renamed_count = 0
+
+        match_lookup: Dict[str, Tuple[Optional[str], str]] = {}
         matched_a_keys: Set[str] = set()
-        matches: List[Tuple[str, Optional[str], str]] = []
-        
-        shape_keys_b = obj_b.data.shape_keys.key_blocks
-        
+
         for b_name, b_center in centers_b.items():
             best_match_name = None
             best_similarity = 0.0
-            
+
             for a_name, a_center in centers_a.items():
                 if a_name in matched_a_keys:
                     continue
-                    
+
                 similarity = self._calculate_similarity(a_center, b_center)
                 if similarity > best_similarity and similarity >= self.similarity_threshold:
                     best_similarity = similarity
                     best_match_name = a_name
-            
+
             if best_match_name:
-                shape_keys_b[b_name].name = best_match_name
                 matched_a_keys.add(best_match_name)
-                renamed_count += 1
-                matches.append((b_name, best_match_name, f"{best_similarity:.3f}"))
+                match_lookup[b_name] = (best_match_name, f"{best_similarity:.3f}")
             else:
-                matches.append((b_name, None, "no match"))
-        
+                match_lookup[b_name] = (None, "no match")
+
+        shape_keys_b = obj_b.data.shape_keys.key_blocks
+        original_sk_names = [sk.name for sk in shape_keys_b]
+
+        renamed_count = 0
+        pair_items: List[Tuple[str, str, str]] = []
+
+        for orig_name in original_sk_names:
+            sk = shape_keys_b[orig_name]
+            if sk == sk.relative_key:
+                continue
+
+            match_info = match_lookup.get(orig_name, (None, "-"))
+            a_name, similarity_str = match_info
+            if a_name:
+                shape_keys_b[orig_name].name = a_name
+                pair_items.append((orig_name, a_name, similarity_str))
+                renamed_count += 1
+            else:
+                pair_items.append((orig_name, orig_name, similarity_str))
+
         return {
             'renamed_count': renamed_count,
-            'matches': matches,
+            'pair_items': pair_items,
             'total_a': len(centers_a),
             'total_b': len(centers_b)
         }
     
-    def _print_detailed_results(self, 
-                              obj_a: bpy.types.Object, 
-                              obj_b: bpy.types.Object, 
+    def _print_detailed_results(self,
+                              obj_a: bpy.types.Object,
+                              obj_b: bpy.types.Object,
                               result: Dict[str, any]) -> None:
         """打印详细结果到控制台"""
         header = f"形态键匹配与重命名详细结果 (A物体: {obj_a.name}, B物体: {obj_b.name})"
         separator = "=" * len(header)
-        
+
         print(f"\n{separator}")
         print(header)
         print(separator)
         print(f"相似度阈值: {self.similarity_threshold:.3f}")
         print(f"{'B物体原始名称':<30} {'重命名为':<30} {'相似度':<20}")
         print("-" * 80)
-        
-        matched = 0 
+
+        matched = 0
         unmatched = 0
-        
-        for b_name, a_name, similarity in result['matches']:
-            if a_name:
+
+        for left_name, right_name, similarity_str in result['pair_items']:
+            if left_name != right_name:
                 matched += 1
-                print(f"{b_name:<30} → {a_name:<30} {similarity:<20}")
+                print(f"{left_name:<30} → {right_name:<30} {similarity_str:<20}")
             else:
-                print(f"{b_name:<30} → {'保留原名称':<30} {'(未匹配)':<20}")
                 unmatched += 1
-        
+                print(f"{left_name:<30} → {'保留原名称':<30} {similarity_str:<20}")
+
         print(separator)
         print("总结:")
         print(f"  A物体形态键数量: {result['total_a']}")
@@ -217,6 +321,188 @@ class O_ShapeKeysMatchRename(bpy.types.Operator):
         print(f"  未匹配数量: {unmatched}")
         print(f"  总重命名数量: {result['renamed_count']}")
         print(separator)
+
+class O_ShapeKeyMappingRemove(bpy.types.Operator):
+    bl_idname = "xqfa.shape_key_mapping_remove"
+    bl_label = "关闭映射"
+    bl_description = "从列表中移除此映射记录"
+
+    index: bpy.props.IntProperty()
+
+    def execute(self, context):
+        scene = context.scene
+        mappings = getattr(scene, 'xqfa_shape_key_mappings', None)
+        if mappings is None:
+            return {'CANCELLED'}
+        if self.index < 0 or self.index >= len(mappings):
+            return {'CANCELLED'}
+        mappings.remove(self.index)
+        return {'FINISHED'}
+
+
+class O_ShapeKeyMappingApply(bpy.types.Operator):
+    bl_idname = "xqfa.shape_key_mapping_apply"
+    bl_label = "应用映射"
+    bl_description = "按映射关系重命名两个物体的形态键"
+
+    index: bpy.props.IntProperty()
+    direction: bpy.props.EnumProperty(
+        name="方向",
+        items=[
+            ("LEFT_TO_RIGHT", "左→右", "用左物体的名称重命名右物体"),
+            ("RIGHT_TO_LEFT", "右→左", "用右物体的原始名称重命名左物体"),
+        ],
+        default="LEFT_TO_RIGHT",
+    )
+
+    def execute(self, context):
+        scene = context.scene
+        mappings = getattr(scene, 'xqfa_shape_key_mappings', None)
+        if mappings is None or self.index < 0 or self.index >= len(mappings):
+            return {'CANCELLED'}
+        item = mappings[self.index]
+
+        selected_objs = [o for o in context.selected_objects if o.type == 'MESH' and o.data.shape_keys]
+        if not selected_objs:
+            self.report({'ERROR'}, "请先选择有形态键的网格物体")
+            return {'CANCELLED'}
+
+        if self.direction == "LEFT_TO_RIGHT":
+            lookup = [(p.left_name, p.right_name) for p in item.pairs]
+        else:
+            lookup = [(p.right_name, p.left_name) for p in item.pairs]
+
+        total_renamed = 0
+        total_skipped = 0
+        affected_objs = 0
+
+        for obj in selected_objs:
+            sk_blocks = obj.data.shape_keys.key_blocks
+            obj_renamed = 0
+            for old_name, new_name in lookup:
+                idx = sk_blocks.find(old_name)
+                if idx == -1:
+                    total_skipped += 1
+                    continue
+                try:
+                    sk_blocks[idx].name = new_name
+                    obj_renamed += 1
+                except Exception:
+                    total_skipped += 1
+            if obj_renamed > 0:
+                total_renamed += obj_renamed
+                affected_objs += 1
+
+        self.report({'INFO'}, f"影响 {affected_objs}/{len(selected_objs)} 个物体：已重命名 {total_renamed} 项，跳过 {total_skipped} 项")
+        return {'FINISHED'}
+
+
+class O_ShapeKeyMappingReorder(bpy.types.Operator):
+    bl_idname = "xqfa.shape_key_mapping_reorder"
+    bl_label = "按映射顺序重排形态键"
+    bl_description = "按映射记录中左侧（或右侧）名称的顺序，重排选中物体的形态键（保留数据，缺失项新建空键，多余项放到末尾）"
+
+    index: bpy.props.IntProperty()
+    direction: bpy.props.EnumProperty(
+        name="顺序来源",
+        items=[
+            ("LEFT", "应用左侧顺序", "按映射中 left_name 的出现顺序排列"),
+            ("RIGHT", "应用右侧顺序", "按映射中 right_name 的出现顺序排列"),
+        ],
+        default="LEFT",
+    )
+
+    def execute(self, context):
+        scene = context.scene
+        mappings = getattr(scene, 'xqfa_shape_key_mappings', None)
+        if mappings is None or self.index < 0 or self.index >= len(mappings):
+            return {'CANCELLED'}
+
+        item = mappings[self.index]
+        if not item.pairs:
+            self.report({'WARNING'}, "此映射记录为空")
+            return {'CANCELLED'}
+
+        target_objs = [o for o in context.selected_objects if o.type == 'MESH']
+        if not target_objs:
+            self.report({'ERROR'}, "请先选择网格物体")
+            return {'CANCELLED'}
+
+        desired_names = [p.left_name if self.direction == "LEFT" else p.right_name for p in item.pairs]
+
+        total_matched = 0
+        total_added = 0
+        total_extra = 0
+        for obj in target_objs:
+            result = self._reorder_shape_keys(obj, desired_names)
+            total_matched += result['matched']
+            total_added += result['added']
+            total_extra += result['extra']
+
+        self.report(
+            {'INFO'},
+            f"已在 {len(target_objs)} 个物体上调整顺序 (共 {total_matched} 匹配, {total_added} 新建空键, {total_extra} 保留到末尾)"
+        )
+        return {'FINISHED'}
+
+    def _reorder_shape_keys(self, target_obj, desired_order):
+        if not target_obj.data.shape_keys or len(target_obj.data.shape_keys.key_blocks) == 0:
+            target_obj.shape_key_add(name="Basis", from_mix=False)
+
+        key_blocks = target_obj.data.shape_keys.key_blocks
+        num_verts = len(target_obj.data.vertices)
+
+        shape_data = {}
+        for sk in key_blocks:
+            coords = np.empty(num_verts * 3, dtype=np.float32)
+            sk.data.foreach_get('co', coords)
+            shape_data[sk.name] = coords
+
+        original_names = [sk.name for sk in key_blocks]
+        basis_name = key_blocks[0].name
+
+        for i in range(len(key_blocks) - 1, 0, -1):
+            target_obj.shape_key_remove(key_blocks[i])
+
+        matched = 0
+        added = 0
+        extra = 0
+        used_names = {basis_name}
+
+        for name in desired_order:
+            if name in used_names:
+                continue
+
+            new_sk = target_obj.shape_key_add(name=name, from_mix=False)
+            if name in shape_data:
+                coords = shape_data.pop(name)
+                new_sk.data.foreach_set('co', coords)
+                new_sk.data.update()
+                matched += 1
+            else:
+                added += 1
+            used_names.add(name)
+
+        for extra_name in list(shape_data.keys()):
+            if extra_name == basis_name:
+                continue
+            if extra_name in used_names:
+                continue
+            new_sk = target_obj.shape_key_add(name=extra_name, from_mix=False)
+            coords = shape_data.pop(extra_name)
+            new_sk.data.foreach_set('co', coords)
+            new_sk.data.update()
+            extra += 1
+            used_names.add(extra_name)
+
+        return {
+            'matched': matched,
+            'added': added,
+            'extra': extra,
+            'original_total': len(original_names),
+            'order_total': len(desired_order),
+        }
+
 
 class O_ShapeKeysSortMatch(bpy.types.Operator):
     bl_idname = "xqfa.shape_keys_sort_match"
@@ -731,19 +1017,37 @@ class O_ShapeKeysTransfer(bpy.types.Operator):
 
 
 def register():
+    bpy.utils.register_class(XqfaShapeKeyPairItem)
+    bpy.utils.register_class(XqfaShapeKeyMappingItem)
+    bpy.utils.register_class(SKPairList)
     bpy.utils.register_class(DATA_PT_shape_key_tools)
     bpy.utils.register_class(O_ShapeKeysMatchRename)
+    bpy.utils.register_class(O_ShapeKeyMappingRemove)
+    bpy.utils.register_class(O_ShapeKeyMappingApply)
+    bpy.utils.register_class(O_ShapeKeyMappingReorder)
     bpy.utils.register_class(O_ShapeKeysSortMatch)
     bpy.utils.register_class(O_ShapeKeysRenameByOrder)
     bpy.utils.register_class(O_ShapeKeysSelectAffectedVertices)
     bpy.utils.register_class(O_ShapeKeysClean)
     bpy.utils.register_class(O_ShapeKeysTransfer)
+    bpy.types.Scene.xqfa_shape_key_mappings = bpy.props.CollectionProperty(
+        type=XqfaShapeKeyMappingItem,
+        name="形态键映射记录",
+    )
 
 def unregister():
+    if hasattr(bpy.types.Scene, 'xqfa_shape_key_mappings'):
+        del bpy.types.Scene.xqfa_shape_key_mappings
     bpy.utils.unregister_class(DATA_PT_shape_key_tools)
+    bpy.utils.unregister_class(SKPairList)
     bpy.utils.unregister_class(O_ShapeKeysMatchRename)
+    bpy.utils.unregister_class(O_ShapeKeyMappingRemove)
+    bpy.utils.unregister_class(O_ShapeKeyMappingApply)
+    bpy.utils.unregister_class(O_ShapeKeyMappingReorder)
     bpy.utils.unregister_class(O_ShapeKeysSortMatch)
     bpy.utils.unregister_class(O_ShapeKeysRenameByOrder)
     bpy.utils.unregister_class(O_ShapeKeysSelectAffectedVertices)
     bpy.utils.unregister_class(O_ShapeKeysClean)
     bpy.utils.unregister_class(O_ShapeKeysTransfer)
+    bpy.utils.unregister_class(XqfaShapeKeyMappingItem)
+    bpy.utils.unregister_class(XqfaShapeKeyPairItem)

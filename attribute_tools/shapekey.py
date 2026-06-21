@@ -3,6 +3,16 @@ import bpy
 import numpy as np
 import time
 from typing import Dict, Tuple, Set, List, Optional
+from bpy.props import IntProperty, FloatProperty, PointerProperty
+
+class XQFA_Utils:
+    @staticmethod
+    def is_mesh(scene, obj):
+        return obj.type == "MESH"
+    
+    @staticmethod
+    def is_armature(scene, obj):
+        return obj.type == "ARMATURE"
 
 class XqfaShapeKeyPairItem(bpy.types.PropertyGroup):
     left_name: bpy.props.StringProperty(name="左")
@@ -49,6 +59,22 @@ class DATA_PT_shape_key_tools(bpy.types.Panel):
         col.operator(O_ShapeKeysSelectAffectedVertices.bl_idname, text=O_ShapeKeysSelectAffectedVertices.bl_label, icon="VERTEXSEL")
         col.operator(O_ShapeKeysClean.bl_idname, text=O_ShapeKeysClean.bl_label, icon="BRUSH_DATA")
         col.operator(O_ShapeKeysTransfer.bl_idname, text=O_ShapeKeysTransfer.bl_label, icon="SHAPEKEY_DATA")
+
+        row = col.row(align=True)
+        row.prop(context.scene, "sk_source_mesh", text = "", icon="MESH_DATA")
+        if context.scene.sk_source_mesh:
+            armature_mod = None
+            armature_modifiers = [mod for mod in context.scene.sk_source_mesh.modifiers if mod.type == 'ARMATURE']
+            
+            if armature_modifiers:
+                if len(armature_modifiers) == 1:
+                    armature_mod = armature_modifiers[0]
+                    row.label(text=f"骨架: {armature_mod.object.name if armature_mod.object else '无'}", icon='ARMATURE_DATA')
+                else:
+                    row.label(text="错误: 物体有多个骨架修改器", icon='ERROR')
+            else:
+                row.label(text="错误: 物体没有骨架修改器", icon='ERROR')
+        row.operator(XQFA_OT_ApplyAsShapekey.bl_idname, icon="SHAPEKEY_DATA")
 
         self._draw_mappings(context)
 
@@ -868,36 +894,44 @@ class O_ShapeKeysClean(bpy.types.Operator):
 
     def execute(self, context):
         try:
-            obj = context.active_object
+            selected_objs = [obj for obj in context.selected_objects if obj.type == 'MESH']
 
-            if not obj or obj.type != 'MESH':
-                self.report({'ERROR'}, "请选择一个网格物体")
+            if not selected_objs:
+                self.report({'ERROR'}, "请选择至少一个网格物体")
                 return {'CANCELLED'}
 
-            if not obj.data.shape_keys:
-                self.report({'ERROR'}, "物体没有形态键")
-                return {'CANCELLED'}
+            total_removed = 0
+            total_kept = 0
+            processed = 0
 
-            if not obj.data.shape_keys.use_relative:
-                self.report({'ERROR'}, "仅支持相对形态键")
-                return {'CANCELLED'}
+            for obj in selected_objs:
+                if not obj.data.shape_keys:
+                    print(f"跳过 {obj.name}: 没有形态键")
+                    continue
 
-            result = self._clean_empty_shape_keys(obj, self.clean_threshold)
+                if not obj.data.shape_keys.use_relative:
+                    print(f"跳过 {obj.name}: 非相对形态键")
+                    continue
 
-            if result['removed'] > 0:
+                result = self._clean_empty_shape_keys(obj, self.clean_threshold)
+                total_removed += result['removed']
+                total_kept += result['kept']
+                processed += 1
+
+                if result['removed_names']:
+                    print(f"\n形态键清理结果 [{obj.name}]:")
+                    for name in result['removed_names']:
+                        print(f"  ✕ {name} (已删除)")
+                    for name in result['kept_names']:
+                        print(f"  ✓ {name} (保留)")
+
+            if processed == 0:
+                self.report({'INFO'}, "没有可处理的物体")
+            elif total_removed > 0:
                 self.report({'INFO'},
-                           f"已删除 {result['removed']} 个无效形态键，"
-                           f"保留 {result['kept']} 个有效形态键")
+                           f"已处理 {processed} 个物体，删除 {total_removed} 个无效形态键，保留 {total_kept} 个有效形态键")
             else:
-                self.report({'INFO'}, "所有形态键均有效，无需清理")
-
-            # 打印详细结果
-            if result['removed_names']:
-                print(f"\n形态键清理结果 [{obj.name}]:")
-                for name in result['removed_names']:
-                    print(f"  ✕ {name} (已删除)")
-                for name in result['kept_names']:
-                    print(f"  ✓ {name} (保留)")
+                self.report({'INFO'}, f"已处理 {processed} 个物体，所有形态键均有效，无需清理")
 
             return {'FINISHED'}
 
@@ -1015,39 +1049,107 @@ class O_ShapeKeysTransfer(bpy.types.Operator):
         self.report({'INFO'}, f"已传递 {transferred} 个形态键: {source_obj.name} → {target_obj.name}")
         return {'FINISHED'}
 
+class XQFA_OT_ApplyAsShapekey(bpy.types.Operator):
+    bl_idname = "xqfa.apply_as_shapekey"
+    bl_label = "应用为形态键"
+    bl_description = "将当前骨架的姿态应用为目标物体的形态键"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    def find_armature_modifier(self, obj):
+        """查找物体的骨架修改器"""
+        armature_modifiers = [mod for mod in obj.modifiers if mod.type == 'ARMATURE']
+        
+        if not armature_modifiers:
+            self.report({'ERROR'}, "物体没有骨架修改器")
+            return None
+            
+        if len(armature_modifiers) > 1:
+            self.report({'ERROR'}, "物体有多个骨架修改器")
+            return None
+            
+        return armature_modifiers[0]
+    
+    def execute(self, context):
+        # 检查目标物体
+        try:
+            obj = bpy.data.objects.get(context.scene.sk_source_mesh.name)
+        except:
+            self.report({'ERROR'}, "似乎没有选择对象") 
+            return {'FINISHED'}
+            
+        
+        # 查找骨架修改器
+        armature_mod = self.find_armature_modifier(obj)
+        if not armature_mod:
+            return {'CANCELLED'}
+            
+        armature = armature_mod.object
+        if not armature:
+            self.report({'ERROR'}, "骨架修改器没有指定骨架")
+            return {'CANCELLED'}
+            
+        # 切换到物体模式
+        bpy.ops.object.mode_set(mode='OBJECT')
+        bpy.context.view_layer.objects.active = obj
+
+        # 确保物体有形态键
+        if not obj.data.shape_keys:
+            obj.shape_key_add(name="Basis", from_mix=False)
+            
+        # 使用骨架修改器的保存为形态键功能
+        try:
+            bpy.ops.object.modifier_apply_as_shapekey(keep_modifier=True, modifier=armature_mod.name)
+            self.report({'INFO'}, f"已为 {obj.name} 从骨架修改器创建形态键")
+        except Exception as e:
+            self.report({'ERROR'}, f"应用形态键失败: {str(e)}")
+            return {'CANCELLED'}
+        finally:
+            # 切换回姿态模式并清空变换
+            bpy.context.view_layer.update()
+            bpy.context.view_layer.objects.active = armature
+            bpy.ops.object.mode_set(mode='POSE')
+            bpy.ops.pose.select_all(action='SELECT')
+            bpy.ops.pose.transforms_clear()
+        
+        return {'FINISHED'}
+
+classes = (
+    XqfaShapeKeyPairItem,
+    XqfaShapeKeyMappingItem,
+    SKPairList,
+    DATA_PT_shape_key_tools,
+    O_ShapeKeysMatchRename,
+    O_ShapeKeyMappingRemove,
+    O_ShapeKeyMappingApply,
+    O_ShapeKeyMappingReorder,
+    O_ShapeKeysSortMatch,
+    O_ShapeKeysRenameByOrder,
+    O_ShapeKeysSelectAffectedVertices,
+    O_ShapeKeysClean,
+    O_ShapeKeysTransfer,
+    XQFA_OT_ApplyAsShapekey,
+)
 
 def register():
-    bpy.utils.register_class(XqfaShapeKeyPairItem)
-    bpy.utils.register_class(XqfaShapeKeyMappingItem)
-    bpy.utils.register_class(SKPairList)
-    bpy.utils.register_class(DATA_PT_shape_key_tools)
-    bpy.utils.register_class(O_ShapeKeysMatchRename)
-    bpy.utils.register_class(O_ShapeKeyMappingRemove)
-    bpy.utils.register_class(O_ShapeKeyMappingApply)
-    bpy.utils.register_class(O_ShapeKeyMappingReorder)
-    bpy.utils.register_class(O_ShapeKeysSortMatch)
-    bpy.utils.register_class(O_ShapeKeysRenameByOrder)
-    bpy.utils.register_class(O_ShapeKeysSelectAffectedVertices)
-    bpy.utils.register_class(O_ShapeKeysClean)
-    bpy.utils.register_class(O_ShapeKeysTransfer)
+    for cls in classes:
+        bpy.utils.register_class(cls)
+    
     bpy.types.Scene.xqfa_shape_key_mappings = bpy.props.CollectionProperty(
         type=XqfaShapeKeyMappingItem,
         name="形态键映射记录",
     )
 
+    bpy.types.Scene.sk_source_mesh = PointerProperty(
+        description="选择编辑形态键的物体",
+        type=bpy.types.Object, 
+        poll=XQFA_Utils.is_mesh
+    )
+
 def unregister():
+    for cls in reversed(classes):
+        bpy.utils.unregister_class(cls)
+    
     if hasattr(bpy.types.Scene, 'xqfa_shape_key_mappings'):
         del bpy.types.Scene.xqfa_shape_key_mappings
-    bpy.utils.unregister_class(DATA_PT_shape_key_tools)
-    bpy.utils.unregister_class(SKPairList)
-    bpy.utils.unregister_class(O_ShapeKeysMatchRename)
-    bpy.utils.unregister_class(O_ShapeKeyMappingRemove)
-    bpy.utils.unregister_class(O_ShapeKeyMappingApply)
-    bpy.utils.unregister_class(O_ShapeKeyMappingReorder)
-    bpy.utils.unregister_class(O_ShapeKeysSortMatch)
-    bpy.utils.unregister_class(O_ShapeKeysRenameByOrder)
-    bpy.utils.unregister_class(O_ShapeKeysSelectAffectedVertices)
-    bpy.utils.unregister_class(O_ShapeKeysClean)
-    bpy.utils.unregister_class(O_ShapeKeysTransfer)
-    bpy.utils.unregister_class(XqfaShapeKeyMappingItem)
-    bpy.utils.unregister_class(XqfaShapeKeyPairItem)
+
+    del bpy.types.Scene.sk_source_mesh

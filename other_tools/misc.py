@@ -27,6 +27,8 @@ class XQFA_PT_Demo(bpy.types.Panel):
         col.operator(XQFA_OT_RenameComponents.bl_idname, icon="OUTLINER_OB_EMPTY")
         col.operator(XQFA_OT_SeparateByMaterial.bl_idname, icon="MATERIAL")
         col.operator(XQFA_OT_BatchCleanMaterials.bl_idname, icon="TRASH")
+        col.operator(XQFA_OT_ObjectNameToMaterial.bl_idname, icon="SYNTAX_ON")
+        col.operator(XQFA_OT_MaterialToObjectName.bl_idname, icon="SYNTAX_OFF")
         col.operator(XQFA_OT_SelectWithChildren.bl_idname, icon='RESTRICT_SELECT_OFF')
         col.separator()
         col.operator(XQFA_OT_SelectMoreThan4.bl_idname, icon='CON_KINEMATIC')
@@ -311,6 +313,74 @@ class XQFA_OT_BatchCleanMaterials(bpy.types.Operator):
                 cleaned_count += 1
 
         self.report({'INFO'}, f"已清理 {cleaned_count} 个物体的未使用材质槽")
+        return {'FINISHED'}
+
+
+class XQFA_OT_ObjectNameToMaterial(bpy.types.Operator):
+    """将唯一材质的名称改为物体名称"""
+    bl_idname = "xqfa.object_name_to_material"
+    bl_label = "物体名称-->材质名称"
+    bl_description = "对所有选中的网格物体，若材质唯一则将材质名改为物体名"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.selected_objects is not None and any(
+            obj.type == 'MESH' and obj.data.materials for obj in context.selected_objects
+        )
+
+    def execute(self, context):
+        mesh_objs = [obj for obj in context.selected_objects if obj.type == 'MESH']
+
+        if not mesh_objs:
+            self.report({'WARNING'}, "未选中任何网格物体")
+            return {'CANCELLED'}
+
+        renamed_count = 0
+        for obj in mesh_objs:
+            mats = [m for m in obj.data.materials if m is not None]
+            if len(mats) != 1:
+                continue
+            mat = mats[0]
+            if mat.name != obj.name:
+                mat.name = obj.name
+                renamed_count += 1
+
+        self.report({'INFO'}, f"已重命名 {renamed_count} 个材质")
+        return {'FINISHED'}
+
+
+class XQFA_OT_MaterialToObjectName(bpy.types.Operator):
+    """将物体名称改为其唯一材质的名称"""
+    bl_idname = "xqfa.material_to_object_name"
+    bl_label = "材质名称-->物体名称"
+    bl_description = "对所有选中的网格物体，若材质唯一则将物体名改为材质名"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.selected_objects is not None and any(
+            obj.type == 'MESH' and obj.data.materials for obj in context.selected_objects
+        )
+
+    def execute(self, context):
+        mesh_objs = [obj for obj in context.selected_objects if obj.type == 'MESH']
+
+        if not mesh_objs:
+            self.report({'WARNING'}, "未选中任何网格物体")
+            return {'CANCELLED'}
+
+        renamed_count = 0
+        for obj in mesh_objs:
+            mats = [m for m in obj.data.materials if m is not None]
+            if len(mats) != 1:
+                continue
+            mat_name = mats[0].name
+            if obj.name != mat_name:
+                obj.name = mat_name
+                renamed_count += 1
+
+        self.report({'INFO'}, f"已重命名 {renamed_count} 个物体")
         return {'FINISHED'}
 
 
@@ -638,6 +708,8 @@ classes = (
     XQFA_OT_RenameComponents,
     XQFA_OT_SeparateByMaterial,
     XQFA_OT_BatchCleanMaterials,
+    XQFA_OT_ObjectNameToMaterial,
+    XQFA_OT_MaterialToObjectName,
     XQFA_OT_SelectWithChildren,
     XQFA_OT_SelectMoreThan4,
     XQFA_OT_SelectLessThan4,

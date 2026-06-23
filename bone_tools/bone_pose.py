@@ -354,24 +354,52 @@ class O_BonePoseApply(bpy.types.Operator):
         # 获取当前骨架对象
         armature = bpy.data.objects[armature_name]
 
+        # 检查 SKkeeper 插件是否可用
+        if not hasattr(bpy.ops.sk, 'apply_mods_sk'):
+            self.report({'ERROR'}, "需要安装 SKkeeper 插件")
+            return {'CANCELLED'}
+
         # 创建一个列表来存储满足条件的对象
         objects_to_modify = []
         # 遍历骨架的子级物体
         for child in armature.children:
-            # 将子级物体设为活动对象
-            bpy.context.view_layer.objects.active = child
-            bpy.ops.object.shape_key_add(from_mix=False) # 创建一个形态键，避免下一句bug
-            bpy.ops.object.shape_key_remove(all=True) # 删除所有的形态键
             # 检查子级物体上是否有骨架修改器
-            armature_modifier = None
-            for modifier in child.modifiers:
-                if modifier.type == 'ARMATURE' and modifier.object == armature:
-                    # 确保骨架修改器的绑定对象是之前保存的骨架名称
-                    if modifier.object.name == armature_name:
-                        armature_modifier = modifier
-                        # 如果存在骨架修改器，应用它
-                        bpy.ops.object.modifier_apply(modifier=armature_modifier.name)
-                        objects_to_modify.append(child)  # 将满足条件的对象添加到列表中
+            if not any(
+                mod.type == 'ARMATURE' and mod.object == armature
+                for mod in child.modifiers
+            ):
+                continue
+
+            # 将物体设为显示
+            try:
+                child.hide_set(False)
+                child.hide_viewport = False
+            except:
+                self.report({'WARNING'}, f"无法显示物体 {child.name}，已跳过")
+                continue
+
+            # 将子级物体设为活动对象
+            try:
+                bpy.context.view_layer.objects.active = child
+            except:
+                self.report({'WARNING'}, f"无法设为活动物体 {child.name}，已跳过")
+                continue
+
+            # 调用 SKkeeper 应用所有修改器为形态键
+            child_name = child.name
+            try:
+                bpy.ops.sk.apply_mods_sk()
+            except Exception as e:
+                self.report({'WARNING'}, f"SKkeeper 处理失败 [{child_name}]: {e}")
+                continue
+
+            # SKkeeper 会销毁原物体并创建新物体，需要通过名称重新获取
+            child = bpy.data.objects.get(child_name)
+            if child is None:
+                self.report({'WARNING'}, f"SKkeeper 处理后找不到物体 {child_name}，已跳过")
+                continue
+
+            objects_to_modify.append(child)
 
 
         # 将骨架设为活动对象，进入姿态模式 应用姿态

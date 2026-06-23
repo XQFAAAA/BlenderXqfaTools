@@ -15,7 +15,7 @@ bl_info = {
 ########################## Divider ##########################
 from . import panel
 from .bone_tools import bone_and_vertex_groups, bone_pose, bone_edit, mod_armature_replace
-from .attribute_tools import vertex_groups, shapekey, uv, vertex_colors, extra_object_info
+from .attribute_tools import vertex_groups, shapekey, uv, vertex_colors, extra_object_info, face_bool
 from .other_tools import misc
 from .material_tools import material, bake_node_groups, material_batch, material_snapshot
 
@@ -56,6 +56,7 @@ def register():
     uv.register()
     vertex_colors.register()
     extra_object_info.register()
+    face_bool.register()
     misc.register()
     material.register()
     material_snapshot.register()
@@ -75,6 +76,7 @@ def unregister():
     uv.unregister()
     vertex_colors.unregister()
     extra_object_info.unregister()
+    face_bool.unregister()
     misc.unregister()
     material.unregister()
     material_snapshot.unregister()

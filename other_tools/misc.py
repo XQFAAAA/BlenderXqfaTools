@@ -26,7 +26,6 @@ class XQFA_PT_Demo(bpy.types.Panel):
         col.operator(XQFA_OT_MiniPlane.bl_idname, icon="MESH_CUBE")
         col.operator(XQFA_OT_RenameComponents.bl_idname, icon="OUTLINER_OB_EMPTY")
         col.operator(XQFA_OT_SeparateByMaterial.bl_idname, icon="MATERIAL")
-        col.operator(XQFA_OT_MaterialToFaceGroups.bl_idname, icon="FACE_MAPS")
         col.operator(XQFA_OT_BatchCleanMaterials.bl_idname, icon="TRASH")
         col.operator(XQFA_OT_SelectWithChildren.bl_idname, icon='RESTRICT_SELECT_OFF')
         col.separator()
@@ -275,43 +274,6 @@ class XQFA_OT_NumberToBone(bpy.types.Operator):
                     new_mod.vertex_group = src_mod.vertex_group
 
         self.report({'INFO'}, "已完成合并、匹配重命名、排序、按材质分离及添加骨架")
-        return {'FINISHED'}
-
-
-class XQFA_OT_MaterialToFaceGroups(bpy.types.Operator):
-    """将活动物体的所有材质转化为同名的面域布尔属性"""
-    bl_idname = "xqfa.material_to_face_groups"
-    bl_label = "材质-->面组"
-    bl_description = "为活动物体的每个材质创建同名的布尔型 Face 域属性，材质对应的面设为 True"
-    bl_options = {'REGISTER', 'UNDO'}
-
-    @classmethod
-    def poll(cls, context):
-        obj = context.active_object
-        return obj is not None and obj.type == 'MESH' and obj.data.materials
-
-    def execute(self, context):
-        import numpy as np
-        obj = context.active_object
-        mesh = obj.data
-        num_faces = len(mesh.polygons)
-
-        created_count = 0
-        for i, mat_slot in enumerate(obj.material_slots):
-            mat = mat_slot.material
-            name = mat.name if mat else f"Slot_{i}"
-
-            # 同名的面域属性可能已存在，先尝试删除再创建
-            if name in mesh.attributes:
-                mesh.attributes.remove(mesh.attributes[name])
-
-            attr = mesh.attributes.new(name=name, type='BOOLEAN', domain='FACE')
-            values = np.zeros(num_faces, dtype=bool)
-            values[:] = [poly.material_index == i for poly in mesh.polygons]
-            attr.data.foreach_set('value', values)
-            created_count += 1
-
-        self.report({'INFO'}, f"已创建 {created_count} 个面组属性")
         return {'FINISHED'}
 
 
@@ -675,7 +637,6 @@ classes = (
     XQFA_OT_MiniPlane,
     XQFA_OT_RenameComponents,
     XQFA_OT_SeparateByMaterial,
-    XQFA_OT_MaterialToFaceGroups,
     XQFA_OT_BatchCleanMaterials,
     XQFA_OT_SelectWithChildren,
     XQFA_OT_SelectMoreThan4,

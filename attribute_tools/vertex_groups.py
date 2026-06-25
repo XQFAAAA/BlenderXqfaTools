@@ -18,20 +18,8 @@ class DATA_PT_vertex_group_tools(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
 
-        stats = {
-            "total": "N/A",
-            "with_weight": "N/A",
-            "zero_weight": "N/A"
-        }
-        obj = context.object
-        if obj is not None:
-            stats = obj.get("vertex_group_stats", stats)
-
         col = layout.column(align=True)
-        row = col.row(align=True)
-        row.operator(O_VertexGroupsCount.bl_idname, text=f"统计：{stats['total']} | {stats['with_weight']} | {stats['zero_weight']}", icon="GROUP_VERTEX")
-
-        col.operator(O_VertexGroupsDelNoneActive.bl_idname, text=O_VertexGroupsDelNoneActive.bl_label, icon="GROUP_VERTEX")
+        col.operator(O_VertexGroupsCleanZeroWeight.bl_idname, text=O_VertexGroupsCleanZeroWeight.bl_label, icon="GROUP_VERTEX")
         col.operator(O_VertexGroupsDelNoneSelected.bl_idname, text=O_VertexGroupsDelNoneSelected.bl_label, icon="GROUP_VERTEX")
         col.operator(O_VertexGroupsDelAllSelected.bl_idname, text=O_VertexGroupsDelAllSelected.bl_label, icon="GROUP_VERTEX")
 
@@ -296,105 +284,10 @@ class O_VertexGroupMappingReorder(bpy.types.Operator):
         }
 
 
-class O_VertexGroupsCount(bpy.types.Operator):
-    bl_idname = "xqfa.vertex_groups_count"
-    bl_label = "计算"
-    bl_description = "统计活动物体顶点组中有权重和无权重的数量"
-    
-    def execute(self, context):
-        obj = context.active_object
-        if obj and obj.type == 'MESH':
-            vertex_groups = obj.vertex_groups
-            mesh = obj.data
-            
-            # 使用更高效的方法检查顶点组是否有权重
-            count_with_weight = 0
-            count_zero_weight = 0
-            
-            # 为每个顶点组创建一个标记，初始为False(无权重)
-            has_weights = [False] * len(vertex_groups)
-            
-            # 遍历所有顶点
-            for vertex in mesh.vertices:
-                for group in vertex.groups:
-                    group_index = group.group
-                    # 如果找到至少一个顶点有该组的权重，标记为True
-                    if group.weight > 0:
-                        has_weights[group_index] = True
-            
-            # 统计结果
-            for has_weight in has_weights:
-                if has_weight:
-                    count_with_weight += 1
-            count_zero_weight = len(vertex_groups) - count_with_weight
-            
-            # 将结果存储在对象属性中
-            obj["vertex_group_stats"] = {
-                "total": len(vertex_groups),
-                "with_weight": count_with_weight,
-                "zero_weight": count_zero_weight
-            }
-            
-            self.report({'INFO'}, f"统计完成: 总数 {len(vertex_groups)}, 有权重 {count_with_weight}, 无权重 {count_zero_weight}")
-        else:
-            self.report({'ERROR'}, "请先选择一个Mesh对象作为活动对象。")
-            return {'CANCELLED'}
-
-        return {'FINISHED'}
-
-
-class O_VertexGroupsDelNoneActive(bpy.types.Operator):
-    bl_idname = "xqfa.vertex_groups_del_none_active"
-    bl_label = "删除无权重顶点组"
-    bl_description = "删除活动物体中没有顶点权重的顶点组"
-    
-    def execute(self, context):
-        obj = context.active_object
-        if obj and obj.type == 'MESH':
-            vertex_groups = obj.vertex_groups
-            mesh = obj.data
-            
-            # 使用更高效的方法检查顶点组是否有权重
-            has_weights = [False] * len(vertex_groups)
-            
-            # 遍历所有顶点
-            for vertex in mesh.vertices:
-                for group in vertex.groups:
-                    group_index = group.group
-                    if group.weight > 0:
-                        has_weights[group_index] = True
-            
-            # 收集要删除的顶点组名称（逆序以便安全删除）
-            groups_to_remove = []
-            for i, has_weight in reversed(list(enumerate(has_weights))):
-                if not has_weight:
-                    groups_to_remove.append(vertex_groups[i].name)
-            
-            # 删除无权重顶点组
-            for group_name in groups_to_remove:
-                vertex_groups.remove(vertex_groups[group_name])
-            
-            # 更新统计信息
-            if "vertex_group_stats" in obj:
-                remaining_count = len(vertex_groups)
-                obj["vertex_group_stats"] = {
-                    "total": remaining_count,
-                    "with_weight": remaining_count,  # 删除后剩下的都是有权重的
-                    "zero_weight": 0
-                }
-            
-            self.report({'INFO'}, f"已删除 {len(groups_to_remove)} 个无权重顶点组：{groups_to_remove}")
-        else:
-            self.report({'ERROR'}, "请先选择一个Mesh对象作为活动对象。")
-            return {'CANCELLED'}
-
-        return {'FINISHED'}
-
-
 class O_VertexGroupsDelAllSelected(bpy.types.Operator):
     bl_idname = "xqfa.vertex_groups_del_all_more"
-    bl_label = "批量删除顶点组"
-    bl_description = "删除选择的多个物体的所有顶点组"
+    bl_label = "批量删除所有顶点组"
+    bl_description = "删除选择物体的所有顶点组"
 
     def invoke(self, context, event):
         wm = context.window_manager
@@ -412,12 +305,61 @@ class O_VertexGroupsDelAllSelected(bpy.types.Operator):
         return {'FINISHED'}
 
 
-class O_VertexGroupsDelNoneSelected(bpy.types.Operator):
-    bl_idname = "xqfa.vertex_groups_del_none_more"
-    bl_label = "批量删除无权重顶点组"
-    bl_description = "删除选择的多个物体中没有顶点权重的顶点组"
+class O_VertexGroupsCleanZeroWeight(bpy.types.Operator):
+    """清理选中物体中顶点组的零权重"""
+    bl_idname = "xqfa.vertex_groups_clean_zero_weight"
+    bl_label = "批量清理零权重"
+    bl_description = "对所有选中的网格物体清理顶点组中的零权重"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    weight_limit: bpy.props.FloatProperty(
+        name="权重阈值",
+        description="低于此值的权重将被清理",
+        default=0.01,
+        min=0.0,
+        max=1.0,
+        step=0.001,
+        precision=3,
+    )
+
+    @classmethod
+    def poll(cls, context):
+        return context.selected_objects is not None and any(obj.type == 'MESH' for obj in context.selected_objects)
+
+    def invoke(self, context, event):
+        wm = context.window_manager
+        return wm.invoke_props_dialog(self, width=200)
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, "weight_limit")
 
     def execute(self, context):
+        cleaned_count = 0
+        for obj in context.selected_objects:
+            if obj.type != 'MESH' or not obj.vertex_groups:
+                continue
+            bpy.ops.object.select_all(action='DESELECT')
+            obj.select_set(True)
+            context.view_layer.objects.active = obj
+            bpy.ops.object.vertex_group_clean(group_select_mode='ALL', limit=self.weight_limit)
+            cleaned_count += 1
+
+        if cleaned_count > 0:
+            self.report({'INFO'}, f"已清理 {cleaned_count} 个物体的零权重")
+        else:
+            self.report({'INFO'}, "未找到需要清理的物体")
+        return {'FINISHED'}
+
+
+class O_VertexGroupsDelNoneSelected(bpy.types.Operator):
+    bl_idname = "xqfa.vertex_groups_del_none_more"
+    bl_label = "批量删除空顶点组"
+    bl_description = "删除选择物体中没有顶点的顶点组"
+
+    def execute(self, context):
+        total_removed = 0
+        removed_names = []
         for obj in context.selected_objects:
             if obj and obj.type == 'MESH':
                 vertex_groups = obj.vertex_groups
@@ -437,11 +379,14 @@ class O_VertexGroupsDelNoneSelected(bpy.types.Operator):
                 for group_name, vertex_info in vertex_group_info.items():
                     if not vertex_info:
                         obj.vertex_groups.remove(obj.vertex_groups[group_name])
-                        print(f"已删除顶点组：{group_name}")
-                print("已删除空的顶点组。")
-            else:
-                print("请先选择一个Mesh对象作为活动对象。")
+                        removed_names.append(f"[{obj.name}] {group_name}")
+                        total_removed += 1
 
+        if total_removed > 0:
+            detail = "; ".join(removed_names)
+            self.report({'INFO'}, f"已删除 {total_removed} 个无权重顶点组: {detail}")
+        else:
+            self.report({'INFO'}, "未找到需要删除的无权重顶点组")
         return {'FINISHED'}
 
 
@@ -926,9 +871,8 @@ def register():
     bpy.utils.register_class(O_VertexGroupMappingRemove)
     bpy.utils.register_class(O_VertexGroupMappingApply)
     bpy.utils.register_class(O_VertexGroupMappingReorder)
-    bpy.utils.register_class(O_VertexGroupsCount)
-    bpy.utils.register_class(O_VertexGroupsDelNoneActive)
     bpy.utils.register_class(O_VertexGroupsDelAllSelected)
+    bpy.utils.register_class(O_VertexGroupsCleanZeroWeight)
     bpy.utils.register_class(O_VertexGroupsDelNoneSelected)
     bpy.utils.register_class(O_VertexGroupsMatchRename)
     bpy.utils.register_class(O_VertexGroupsSortMatch)
@@ -944,9 +888,8 @@ def unregister():
     bpy.utils.unregister_class(O_VertexGroupMappingRemove)
     bpy.utils.unregister_class(O_VertexGroupMappingApply)
     bpy.utils.unregister_class(O_VertexGroupMappingReorder)
-    bpy.utils.unregister_class(O_VertexGroupsCount)
-    bpy.utils.unregister_class(O_VertexGroupsDelNoneActive)
     bpy.utils.unregister_class(O_VertexGroupsDelAllSelected)
+    bpy.utils.unregister_class(O_VertexGroupsCleanZeroWeight)
     bpy.utils.unregister_class(O_VertexGroupsDelNoneSelected)
     bpy.utils.unregister_class(O_VertexGroupsMatchRename)
     bpy.utils.unregister_class(O_VertexGroupsSortMatch)

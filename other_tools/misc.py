@@ -29,6 +29,7 @@ class XQFA_PT_Demo(bpy.types.Panel):
         col.operator(XQFA_OT_BatchCleanMaterials.bl_idname, icon="TRASH")
         col.operator(XQFA_OT_ObjectNameToMaterial.bl_idname, icon="SYNTAX_ON")
         col.operator(XQFA_OT_MaterialToObjectName.bl_idname, icon="SYNTAX_OFF")
+        col.operator(XQFA_OT_BatchDeleteModifiers.bl_idname, icon="MODIFIER")
         col.operator(XQFA_OT_SelectWithChildren.bl_idname, icon='RESTRICT_SELECT_OFF')
         col.separator()
         col.operator(XQFA_OT_SelectMoreThan4.bl_idname, icon='CON_KINEMATIC')
@@ -42,7 +43,7 @@ class XQFA_PT_Demo(bpy.types.Panel):
 
 class XQFA_OT_MiniPlane(bpy.types.Operator):
     bl_idname = "xqfa.mini_plane"
-    bl_label = "创建空模"
+    bl_label = "转为空模"
     bl_description = "创建一个极小的平面网格，并将其分配到两个顶点组中"
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -541,6 +542,34 @@ class XQFA_OT_SelectLessThan4(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class XQFA_OT_BatchDeleteModifiers(bpy.types.Operator):
+    """删除选中物体的所有修改器"""
+    bl_idname = "xqfa.batch_delete_modifiers"
+    bl_label = "批量删除修改器"
+    bl_description = "对所有选中的物体删除其所有修改器"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.selected_objects is not None and len(context.selected_objects) > 0
+
+    def execute(self, context):
+        modified_count = 0
+        total_removed = 0
+        for obj in context.selected_objects:
+            if obj.type == 'MESH' and obj.modifiers:
+                num_modifiers = len(obj.modifiers)
+                obj.modifiers.clear()
+                modified_count += 1
+                total_removed += num_modifiers
+
+        if modified_count > 0:
+            self.report({'INFO'}, f"已处理 {modified_count} 个物体，删除 {total_removed} 个修改器")
+        else:
+            self.report({'INFO'}, "未找到需要删除修改器的物体")
+        return {'FINISHED'}
+
+
 class XQFA_OT_SelectNegativeX(bpy.types.Operator):
     bl_idname = "xqfa.select_negative_x"
     bl_label = "选择X<0的顶点"
@@ -710,6 +739,7 @@ classes = (
     XQFA_OT_BatchCleanMaterials,
     XQFA_OT_ObjectNameToMaterial,
     XQFA_OT_MaterialToObjectName,
+    XQFA_OT_BatchDeleteModifiers,
     XQFA_OT_SelectWithChildren,
     XQFA_OT_SelectMoreThan4,
     XQFA_OT_SelectLessThan4,

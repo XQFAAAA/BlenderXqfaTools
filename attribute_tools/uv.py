@@ -1,5 +1,8 @@
 # type: ignore
 import bpy
+import mathutils
+from mathutils import Vector
+import math
 
 class DATA_PT_uv_map_tools(bpy.types.Panel):
     bl_label = "UV贴图"

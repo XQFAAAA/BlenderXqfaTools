@@ -318,7 +318,7 @@ class O_VertexGroupsCleanZeroWeight(bpy.types.Operator):
         default=0.01,
         min=0.0,
         max=1.0,
-        step=0.001,
+        step=0.01,
         precision=3,
     )
 

@@ -36,6 +36,8 @@ class XQFA_PT_Demo(bpy.types.Panel):
         col.operator(XQFA_OT_SelectLessThan4.bl_idname, icon='CON_KINEMATIC')
         col.operator(XQFA_OT_SelectNegativeX.bl_idname, icon='FORWARD')
         col.operator(XQFA_OT_UndoTriSubdivide.bl_idname, icon='MESH_DATA')
+        col.separator()
+        col.operator(XQFA_OT_ConvertCustomNormals.bl_idname, icon='NORMALS_FACE')
 
 
 
@@ -730,6 +732,115 @@ class XQFA_OT_SelectWithChildren(bpy.types.Operator):
 
 
 
+class XQFA_OT_ConvertCustomNormals(bpy.types.Operator):
+    """转化选中物体的自定义法线数据类型"""
+    bl_idname = "xqfa.convert_custom_normals"
+    bl_label = "转化自定义法线"
+    bl_description = "将选中物体的自定义法线数据类型进行转化，通过复制+数据传递修改器实现"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    target_type: bpy.props.EnumProperty(
+        name="目标数据类型",
+        items=[
+            ('FLOAT', "面拐矢量", "转换为浮点矢量类型 (float[3] per corner)"),
+            ('SHORT2', "面拐二维16位整数矢量", "转换为16位整数矢量类型 (short[2] per corner)"),
+        ],
+        default='FLOAT'
+    )
+
+    @classmethod
+    def poll(cls, context):
+        return context.selected_objects is not None and any(
+            obj.type == 'MESH' for obj in context.selected_objects
+        )
+
+    def invoke(self, context, event):
+        wm = context.window_manager
+        return wm.invoke_props_dialog(self, width=260)
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, "target_type", expand=True)
+
+    def _get_current_type(self, mesh):
+        """检测当前自定义法线的存储类型，'FLOAT'/'SHORT2'/None"""
+        if not mesh.has_custom_normals:
+            return None
+
+        # 尝试通过 attributes 检测类型
+        # CD_NORMAL (float[3]) 可能暴露为 CORNER 域的 FLOAT_VECTOR 属性
+        for attr in mesh.attributes:
+            if attr.domain == 'CORNER' and attr.data_type == 'FLOAT_VECTOR':
+                # 检查是否是法线相关的属性名
+                if 'normal' in attr.name.lower() or attr.name == '':
+                    # 如果找到 float vector 类型的 corner 属性，可能已为 float 类型
+                    return 'FLOAT'
+        # 默认为 SHORT2 (CD_CUSTOMLOOPNORMAL)
+        return 'SHORT2'
+
+    def execute(self, context):
+        mesh_objects = [obj for obj in context.selected_objects if obj.type == 'MESH']
+
+        if not mesh_objects:
+            self.report({'WARNING'}, "未选中任何网格物体")
+            return {'CANCELLED'}
+
+        processed = 0
+        skipped = 0
+
+        for obj in mesh_objects:
+            mesh = obj.data
+
+            if not mesh.has_custom_normals:
+                continue
+
+            # 检查当前类型，已经是目标类型则跳过
+            current_type = self._get_current_type(mesh)
+            if current_type == self.target_type:
+                skipped += 1
+                continue
+
+            original_name = obj.name
+
+            # 确保在 OBJECT 模式
+            bpy.ops.object.mode_set(mode='OBJECT')
+            bpy.ops.object.select_all(action='DESELECT')
+            obj.select_set(True)
+            context.view_layer.objects.active = obj
+
+            # 复制物体 A → B
+            bpy.ops.object.duplicate()
+            obj_b = context.selected_objects[0]
+            obj_b.name = f"{original_name}_temp_normals"
+
+            # 重新选择 A
+            bpy.ops.object.select_all(action='DESELECT')
+            obj.select_set(True)
+            context.view_layer.objects.active = obj
+
+            # 清除自定义法向并重新添加（切换数据类型）
+            bpy.ops.mesh.customdata_custom_splitnormals_clear()
+            bpy.ops.mesh.customdata_custom_splitnormals_add()
+
+            # 添加数据传递修改器
+            mod = obj.modifiers.new(name="TransferNormals", type='DATA_TRANSFER')
+            mod.object = obj_b
+            mod.use_loop_data = True
+            mod.data_types_loops = {'CUSTOM_NORMAL'}
+            mod.loop_mapping = 'TOPOLOGY'
+
+            # 应用修改器
+            bpy.ops.object.modifier_apply(modifier=mod.name)
+
+            # 清理临时物体 B
+            bpy.data.objects.remove(obj_b, do_unlink=True)
+
+            processed += 1
+
+        self.report({'INFO'}, f"已处理 {processed} 个物体，跳过 {skipped} 个（已为目标类型）")
+        return {'FINISHED'}
+
+
 classes = (
     XQFA_PT_Demo,
     XQFA_OT_NumberToBone,
@@ -745,6 +856,7 @@ classes = (
     XQFA_OT_SelectLessThan4,
     XQFA_OT_SelectNegativeX,
     XQFA_OT_UndoTriSubdivide,
+    XQFA_OT_ConvertCustomNormals,
 )
 
 def register():

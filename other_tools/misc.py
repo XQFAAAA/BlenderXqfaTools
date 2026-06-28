@@ -1,7 +1,6 @@
 # type: ignore
 import bpy
 from bpy.props import IntProperty, FloatProperty, PointerProperty
-import re
 
 
 
@@ -24,16 +23,11 @@ class XQFA_PT_Demo(bpy.types.Panel):
         col = layout.column()
         col.operator(XQFA_OT_NumberToBone.bl_idname, icon="ARROW_LEFTRIGHT")
         col.operator(XQFA_OT_MiniPlane.bl_idname, icon="MESH_CUBE")
-        col.operator(XQFA_OT_RenameComponents.bl_idname, icon="OUTLINER_OB_EMPTY")
         col.operator(XQFA_OT_SeparateByMaterial.bl_idname, icon="MATERIAL")
         col.operator(XQFA_OT_BatchCleanMaterials.bl_idname, icon="TRASH")
-        col.operator(XQFA_OT_ObjectNameToMaterial.bl_idname, icon="SYNTAX_ON")
-        col.operator(XQFA_OT_MaterialToObjectName.bl_idname, icon="SYNTAX_OFF")
         col.operator(XQFA_OT_BatchDeleteModifiers.bl_idname, icon="MODIFIER")
         col.operator(XQFA_OT_SelectWithChildren.bl_idname, icon='RESTRICT_SELECT_OFF')
         col.separator()
-        col.operator(XQFA_OT_SelectMoreThan4.bl_idname, icon='CON_KINEMATIC')
-        col.operator(XQFA_OT_SelectLessThan4.bl_idname, icon='CON_KINEMATIC')
         col.operator(XQFA_OT_SelectNegativeX.bl_idname, icon='FORWARD')
         col.operator(XQFA_OT_UndoTriSubdivide.bl_idname, icon='MESH_DATA')
         col.separator()
@@ -139,65 +133,7 @@ class XQFA_OT_MiniPlane(bpy.types.Operator):
         return {'FINISHED'}
 
 
-class XQFA_OT_RenameComponents(bpy.types.Operator):
-    """将选中物体名称中 C+数字 前缀替换为 Component +数字，同时也对每个物体的材质名执行相同匹配"""
-    bl_idname = "xqfa.rename_to_components"
-    bl_label = "重命名：C-->Components"
-    bl_description = "匹配格式 C+数字(如C0-body) 替换为 Component +数字(如Component 0.-body)，同时对选中物体的材质名也执行相同匹配"
-    bl_options = {'REGISTER', 'UNDO'}
 
-    def execute(self, context):
-        selected_objects = context.selected_objects
-
-        if not selected_objects:
-            self.report({'WARNING'}, "未选择任何物体")
-            return {'CANCELLED'}
-
-        rename_object_count = 0
-        rename_material_count = 0
-
-        # 正则表达式解释：
-        # ^C : 匹配开头是大写字母 C
-        # (\d+) : 匹配并捕获一个或多个数字
-        # (.*) : 匹配并捕获之后的所有剩余字符
-        pattern = re.compile(r"^C(\d+)(.*)")
-
-        for obj in selected_objects:
-            old_name = obj.name
-            match = pattern.match(old_name)
-
-            if match:
-                number = match.group(1)
-                suffix = match.group(2)
-                new_name = f"Component {number}.{suffix}"
-                obj.name = new_name
-                rename_object_count += 1
-                print(f"Renamed Object '{old_name}' -> '{new_name}'")
-            else:
-                print(f"Skipped Object '{old_name}' (格式不匹配)")
-
-            # 对物体上的所有材质名执行相同匹配
-            if obj.type == 'MESH' and obj.data.materials:
-                for i, mat in enumerate(obj.data.materials):
-                    if mat is None:
-                        continue
-                    old_mat_name = mat.name
-                    mat_match = pattern.match(old_mat_name)
-                    if mat_match:
-                        mat_number = mat_match.group(1)
-                        mat_suffix = mat_match.group(2)
-                        new_mat_name = f"Component {mat_number}.{mat_suffix}"
-                        mat.name = new_mat_name
-                        rename_material_count += 1
-                        print(f"Renamed Material '{old_mat_name}' -> '{new_mat_name}'")
-                    else:
-                        print(f"Skipped Material '{old_mat_name}' (格式不匹配)")
-
-        self.report({'INFO'}, f"成功重命名 {rename_object_count} 个物体, {rename_material_count} 个材质")
-        return {'FINISHED'}
-    
-
-    
 class XQFA_OT_NumberToBone(bpy.types.Operator):
     bl_idname = "xqfa.num_to_bone"
     bl_label = "数字顶点组<-->骨骼名称"
@@ -319,74 +255,6 @@ class XQFA_OT_BatchCleanMaterials(bpy.types.Operator):
         return {'FINISHED'}
 
 
-class XQFA_OT_ObjectNameToMaterial(bpy.types.Operator):
-    """将唯一材质的名称改为物体名称"""
-    bl_idname = "xqfa.object_name_to_material"
-    bl_label = "物体名称-->材质名称"
-    bl_description = "对所有选中的网格物体，若材质唯一则将材质名改为物体名"
-    bl_options = {'REGISTER', 'UNDO'}
-
-    @classmethod
-    def poll(cls, context):
-        return context.selected_objects is not None and any(
-            obj.type == 'MESH' and obj.data.materials for obj in context.selected_objects
-        )
-
-    def execute(self, context):
-        mesh_objs = [obj for obj in context.selected_objects if obj.type == 'MESH']
-
-        if not mesh_objs:
-            self.report({'WARNING'}, "未选中任何网格物体")
-            return {'CANCELLED'}
-
-        renamed_count = 0
-        for obj in mesh_objs:
-            mats = [m for m in obj.data.materials if m is not None]
-            if len(mats) != 1:
-                continue
-            mat = mats[0]
-            if mat.name != obj.name:
-                mat.name = obj.name
-                renamed_count += 1
-
-        self.report({'INFO'}, f"已重命名 {renamed_count} 个材质")
-        return {'FINISHED'}
-
-
-class XQFA_OT_MaterialToObjectName(bpy.types.Operator):
-    """将物体名称改为其唯一材质的名称"""
-    bl_idname = "xqfa.material_to_object_name"
-    bl_label = "材质名称-->物体名称"
-    bl_description = "对所有选中的网格物体，若材质唯一则将物体名改为材质名"
-    bl_options = {'REGISTER', 'UNDO'}
-
-    @classmethod
-    def poll(cls, context):
-        return context.selected_objects is not None and any(
-            obj.type == 'MESH' and obj.data.materials for obj in context.selected_objects
-        )
-
-    def execute(self, context):
-        mesh_objs = [obj for obj in context.selected_objects if obj.type == 'MESH']
-
-        if not mesh_objs:
-            self.report({'WARNING'}, "未选中任何网格物体")
-            return {'CANCELLED'}
-
-        renamed_count = 0
-        for obj in mesh_objs:
-            mats = [m for m in obj.data.materials if m is not None]
-            if len(mats) != 1:
-                continue
-            mat_name = mats[0].name
-            if obj.name != mat_name:
-                obj.name = mat_name
-                renamed_count += 1
-
-        self.report({'INFO'}, f"已重命名 {renamed_count} 个物体")
-        return {'FINISHED'}
-
-
 class XQFA_OT_SeparateByMaterial(bpy.types.Operator):
     bl_idname = "xqfa.separate_by_material"
     bl_label = "按材质分离"
@@ -450,97 +318,6 @@ class XQFA_OT_SeparateByMaterial(bpy.types.Operator):
             total_count += len(separated_objs)
 
         self.report({'INFO'}, f"已按材质分离共 {total_count} 个物体")
-        return {'FINISHED'}
-
-
-
-
-
-class XQFA_OT_SelectMoreThan4(bpy.types.Operator):
-    bl_idname = "xqfa.select_more_than_4"
-    bl_label = "选择连线>4的顶点"
-    bl_description = "在编辑模式中，从选中顶点里选出连线数大于4的顶点"
-    bl_options = {'REGISTER', 'UNDO'}
-
-    include_boundary: bpy.props.BoolProperty(
-        name="包括边界点",
-        description="是否包括边界顶点",
-        default=True
-    )
-
-    @classmethod
-    def poll(cls, context):
-        obj = context.active_object
-        return obj is not None and obj.type == 'MESH' and obj.mode == 'EDIT'
-
-    def execute(self, context):
-        import bmesh
-        obj = context.active_object
-        bm = bmesh.from_edit_mesh(obj.data)
-
-        selected_verts = [v for v in bm.verts if v.select]
-        if not selected_verts:
-            self.report({'WARNING'}, "没有选中的顶点")
-            return {'CANCELLED'}
-
-        count = 0
-        for v in selected_verts:
-            is_boundary = any(e.is_boundary for e in v.link_edges)
-            if len(v.link_edges) > 4:
-                if self.include_boundary or not is_boundary:
-                    v.select = True
-                    count += 1
-                else:
-                    v.select = False
-            else:
-                v.select = False
-
-        bmesh.update_edit_mesh(obj.data)
-        self.report({'INFO'}, f"已选择 {count} 个连线>4的顶点")
-        return {'FINISHED'}
-
-
-class XQFA_OT_SelectLessThan4(bpy.types.Operator):
-    bl_idname = "xqfa.select_less_than_4"
-    bl_label = "选择连线<4的顶点"
-    bl_description = "在编辑模式中，从选中顶点里选出连线数小于4的顶点"
-    bl_options = {'REGISTER', 'UNDO'}
-
-    include_boundary: bpy.props.BoolProperty(
-        name="包括边界点",
-        description="是否包括边界顶点",
-        default=True
-    )
-
-    @classmethod
-    def poll(cls, context):
-        obj = context.active_object
-        return obj is not None and obj.type == 'MESH' and obj.mode == 'EDIT'
-
-    def execute(self, context):
-        import bmesh
-        obj = context.active_object
-        bm = bmesh.from_edit_mesh(obj.data)
-
-        selected_verts = [v for v in bm.verts if v.select]
-        if not selected_verts:
-            self.report({'WARNING'}, "没有选中的顶点")
-            return {'CANCELLED'}
-
-        count = 0
-        for v in selected_verts:
-            is_boundary = any(e.is_boundary for e in v.link_edges)
-            if len(v.link_edges) < 4:
-                if self.include_boundary or not is_boundary:
-                    v.select = True
-                    count += 1
-                else:
-                    v.select = False
-            else:
-                v.select = False
-
-        bmesh.update_edit_mesh(obj.data)
-        self.report({'INFO'}, f"已选择 {count} 个连线<4的顶点")
         return {'FINISHED'}
 
 
@@ -845,15 +622,10 @@ classes = (
     XQFA_PT_Demo,
     XQFA_OT_NumberToBone,
     XQFA_OT_MiniPlane,
-    XQFA_OT_RenameComponents,
     XQFA_OT_SeparateByMaterial,
     XQFA_OT_BatchCleanMaterials,
-    XQFA_OT_ObjectNameToMaterial,
-    XQFA_OT_MaterialToObjectName,
     XQFA_OT_BatchDeleteModifiers,
     XQFA_OT_SelectWithChildren,
-    XQFA_OT_SelectMoreThan4,
-    XQFA_OT_SelectLessThan4,
     XQFA_OT_SelectNegativeX,
     XQFA_OT_UndoTriSubdivide,
     XQFA_OT_ConvertCustomNormals,

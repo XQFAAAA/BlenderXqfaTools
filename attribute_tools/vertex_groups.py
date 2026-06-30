@@ -3,6 +3,7 @@ import bpy
 import numpy as np
 import time
 from typing import Dict, Tuple, Set, List, Optional
+from bpy.props import EnumProperty
 
 class DATA_PT_vertex_group_tools(bpy.types.Panel):
     bl_label = "顶点组"
@@ -27,6 +28,9 @@ class DATA_PT_vertex_group_tools(bpy.types.Panel):
         col.operator(O_VertexGroupsMatchRename.bl_idname, text=O_VertexGroupsMatchRename.bl_label, icon="SORTBYEXT")
         col.operator(O_VertexGroupsSortMatch.bl_idname, text=O_VertexGroupsSortMatch.bl_label, icon="SORTSIZE")
 
+        col = layout.column(align=True)
+        col.operator(XQFA_OT_SyncExtractUnpack.bl_idname, icon="UV_SYNC_SELECT")
+
         self._draw_mappings(context)
 
     def _draw_mappings(self, context):
@@ -42,30 +46,26 @@ class DATA_PT_vertex_group_tools(bpy.types.Panel):
         box.label(text="映射记录", icon="COLLAPSEMENU")
         for idx, item in enumerate(mappings):
             row = box.row(align=True)
-            col_exp = row.column(align=True)
-            sub = col_exp.row(align=True)
             icon = "TRIA_DOWN" if item.expanded else "TRIA_RIGHT"
-            sub.prop(item, "expanded", icon=icon, icon_only=True, emboss=False)
+            row.prop(item, "expanded", icon=icon, icon_only=True, emboss=False)
             if not item.label:
                 item.label = f"映射 {idx + 1}"
-            sub.prop(item, "label", text="")
-            sub.label(text=f"({len(item.pairs)}项)")
-            col_btns = row.column(align=True)
-            col_btns.alignment = 'RIGHT'
-            btns = col_btns.row(align=True)
-            op_lr = btns.operator(O_VertexGroupMappingApply.bl_idname, text="→")
+            row.prop(item, "label", text="")
+            row.label(text=f"({len(item.pairs)}项)")
+            row.separator(factor=1.0)
+            op_lr = row.operator(O_VertexGroupMappingApply.bl_idname, text="", icon="FORWARD")
             op_lr.index = idx
             op_lr.direction = "LEFT_TO_RIGHT"
-            op_rl = btns.operator(O_VertexGroupMappingApply.bl_idname, text="←")
+            op_rl = row.operator(O_VertexGroupMappingApply.bl_idname, text="", icon="BACK")
             op_rl.index = idx
             op_rl.direction = "RIGHT_TO_LEFT"
-            op_l_order = btns.operator(O_VertexGroupMappingReorder.bl_idname, text="L↓")
+            op_l_order = row.operator(O_VertexGroupMappingReorder.bl_idname, text="", icon="EVENT_L")
             op_l_order.index = idx
             op_l_order.direction = "LEFT"
-            op_r_order = btns.operator(O_VertexGroupMappingReorder.bl_idname, text="R↓")
+            op_r_order = row.operator(O_VertexGroupMappingReorder.bl_idname, text="", icon="EVENT_R")
             op_r_order.index = idx
             op_r_order.direction = "RIGHT"
-            btns.operator(O_VertexGroupMappingRemove.bl_idname, text="", icon="X").index = idx
+            row.operator(O_VertexGroupMappingRemove.bl_idname, text="", icon="X").index = idx
             if item.expanded:
                 box.template_list(
                     "VGPairList",
@@ -408,6 +408,12 @@ class O_VertexGroupsMatchRename(bpy.types.Operator):
         precision=3
     )
 
+    mapping_name: bpy.props.StringProperty(
+        name="映射名称",
+        description="存储映射记录时使用的标签名称",
+        default=""
+    )
+
     def invoke(self, context, event):
         wm = context.window_manager
         return wm.invoke_props_dialog(self, width=200)
@@ -458,7 +464,7 @@ class O_VertexGroupsMatchRename(bpy.types.Operator):
             return
         mappings = scene.xqfa_vertex_group_mappings
         item = mappings.add()
-        item.label = f"映射 {len(mappings)}"
+        item.label = self.mapping_name if self.mapping_name else f"映射 {len(mappings)}"
         item.expanded = False
         pair_items = result.get('pair_items', [])
         for left_name, right_name, similarity in pair_items:
@@ -863,33 +869,309 @@ class O_VertexGroupsSortMatch(bpy.types.Operator):
 
 
 
+class XQFA_OT_SyncExtractUnpack(bpy.types.Operator):
+    bl_idname = "xqfa.sync_extract_unpack"
+    bl_label = "同步提取和解包"
+    bl_description = "合并/分离模式：匹配材质、顶点组、形态键并添加骨架"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    mode: EnumProperty(
+        name="模式",
+        items=[
+            ('MERGE', "合并", "合并模式：合并物体后匹配并分离"),
+            ('SEPARATE', "分离", "分离模式：复制活动物体分离后逐个匹配"),
+        ],
+        default='MERGE'
+    )
+
+    @classmethod
+    def poll(cls, context):
+        return context.active_object is not None and len(context.selected_objects) > 1
+
+    def invoke(self, context, event):
+        wm = context.window_manager
+        return wm.invoke_props_dialog(self, width=200)
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, "mode", expand=True)
+
+    def execute(self, context):
+        if self.mode == 'MERGE':
+            return self._execute_merge(context)
+        else:
+            return self._execute_separate(context)
+
+    # ========== 辅助函数 ==========
+
+    @staticmethod
+    def _get_mapping_name(obj_name):
+        """映射名称 = 物体名称按下划线分割后的第二个元素，无则用原名"""
+        parts = obj_name.split("_")
+        if len(parts) > 1:
+            return parts[1]
+        return obj_name
+
+    @staticmethod
+    def _find_common_prefix(strings):
+        """查找字符串列表的最长公共前缀"""
+        if not strings:
+            return ""
+        prefix = strings[0]
+        for s in strings[1:]:
+            while not s.startswith(prefix):
+                prefix = prefix[:-1]
+                if not prefix:
+                    return ""
+        return prefix
+
+    @staticmethod
+    def _count_vertices_per_material(obj):
+        """统计每个材质索引对应的唯一顶点数"""
+        mesh = obj.data
+        vert_sets = {}
+        for poly in mesh.polygons:
+            mat_idx = poly.material_index
+            if mat_idx not in vert_sets:
+                vert_sets[mat_idx] = set()
+            for vi in poly.vertices:
+                vert_sets[mat_idx].add(vi)
+        return {idx: len(verts) for idx, verts in vert_sets.items()}
+
+    @staticmethod
+    def _add_armature(context, objs, source_obj):
+        """为物体列表添加骨架修改器（从 source_obj 复制）"""
+        bpy.ops.object.select_all(action='DESELECT')
+        for obj in objs:
+            if obj.type == 'MESH':
+                obj.select_set(True)
+        context.view_layer.objects.active = source_obj
+
+        armature_modifiers = [mod for mod in source_obj.modifiers if mod.type == 'ARMATURE']
+        if armature_modifiers:
+            src_mod = armature_modifiers[0]
+            for obj in objs:
+                if obj.type == 'MESH':
+                    new_mod = obj.modifiers.new(name="Armature", type='ARMATURE')
+                    new_mod.object = src_mod.object
+                    new_mod.use_bone_envelopes = src_mod.use_bone_envelopes
+                    new_mod.use_vertex_groups = src_mod.use_vertex_groups
+                    new_mod.use_deform_preserve_volume = src_mod.use_deform_preserve_volume
+                    new_mod.vertex_group = src_mod.vertex_group
+
+    # ========== 合并模式 ==========
+
+    def _execute_merge(self, context):
+        active_e = context.active_object
+        selected_others = [obj for obj in context.selected_objects if obj != active_e and obj.type == 'MESH']
+
+        if not selected_others:
+            self.report({'ERROR'}, "请选择除活动物体外的至少一个网格物体")
+            return {'CANCELLED'}
+
+        # 步骤1: 合并 A B C 到 A
+        target_a = selected_others[0]
+        bpy.ops.object.select_all(action='DESELECT')
+        for obj in selected_others:
+            obj.select_set(True)
+        context.view_layer.objects.active = target_a
+        bpy.ops.object.join()
+
+        # 步骤2: 匹配材质（按材质顶点数匹配，重命名A的材质，E使用A的材质）
+        self._match_materials_merge(target_a, active_e)
+
+        # 计算映射名称
+        mapping_name = self._get_mapping_name(active_e.name)
+
+        # 步骤3: 顶点组匹配重命名 (E为源, A为目标)
+        bpy.ops.object.select_all(action='DESELECT')
+        active_e.select_set(True)
+        target_a.select_set(True)
+        context.view_layer.objects.active = target_a
+        try:
+            bpy.ops.xqfa.vertex_groups_match_rename('EXEC_DEFAULT', mapping_name=mapping_name)
+        except Exception as e:
+            self.report({'WARNING'}, f"顶点组匹配重命名失败: {e}")
+
+        # 步骤4: 形态键匹配重命名 (E为源, A为目标)
+        if target_a.data.shape_keys and active_e.data.shape_keys:
+            try:
+                bpy.ops.xqfa.shape_keys_match_rename('EXEC_DEFAULT', mapping_name=mapping_name)
+            except Exception as e:
+                self.report({'WARNING'}, f"形态键匹配重命名失败: {e}")
+
+        # 步骤5: 不执行名称排序
+
+        # 步骤6: 按材质分离 A (使用材质名作为物体名)
+        bpy.ops.object.select_all(action='DESELECT')
+        target_a.select_set(True)
+        context.view_layer.objects.active = target_a
+        try:
+            bpy.ops.xqfa.separate_by_material('EXEC_DEFAULT', naming_mode='MATERIAL')
+        except Exception as e:
+            self.report({'WARNING'}, f"按材质分离失败: {e}")
+
+        separated_objs = context.selected_objects
+
+        # 步骤7: 添加骨架
+        self._add_armature(context, separated_objs, active_e)
+
+        self.report({'INFO'}, "合并模式完成")
+        return {'FINISHED'}
+
+    def _match_materials_merge(self, obj_a, obj_e):
+        """合并模式：按材质顶点数匹配A和E的材质，重命名A的材质，E使用A的材质"""
+        # 统计A和E每个材质的顶点数
+        a_mat_verts = self._count_vertices_per_material(obj_a)
+        e_mat_verts = self._count_vertices_per_material(obj_e)
+
+        # 查找E材质名的公共前缀并去除
+        e_mat_names = [mat.name for mat in obj_e.data.materials if mat]
+        common_prefix = self._find_common_prefix(e_mat_names)
+
+        # 按顶点数匹配
+        used_e_indices = set()
+        for a_idx, a_mat in enumerate(obj_a.data.materials):
+            if a_mat is None:
+                continue
+            a_count = a_mat_verts.get(a_idx, 0)
+            for e_idx, e_mat in enumerate(obj_e.data.materials):
+                if e_mat is None or e_idx in used_e_indices:
+                    continue
+                e_count = e_mat_verts.get(e_idx, 0)
+                if a_count == e_count and a_count > 0:
+                    # 获取E材质名去除前缀后的后缀
+                    suffix = e_mat.name[len(common_prefix):] if e_mat.name.startswith(common_prefix) else e_mat.name
+                    # 重命名A的材质
+                    a_mat.name = f"{a_mat.name} {suffix}"
+                    # E的对应材质槽直接使用A的材质
+                    obj_e.material_slots[e_idx].material = a_mat
+                    used_e_indices.add(e_idx)
+                    break
+
+    # ========== 分离模式 ==========
+
+    def _execute_separate(self, context):
+        active_e = context.active_object
+        selected_others = [obj for obj in context.selected_objects if obj != active_e and obj.type == 'MESH']
+
+        if not selected_others:
+            self.report({'ERROR'}, "请选择除活动物体外的至少一个网格物体")
+            return {'CANCELLED'}
+
+        # 计算映射名称前缀
+        prefix = self._get_mapping_name(active_e.name)
+
+        # 步骤1: 去除E材质名的公共前缀
+        e_mat_names = [mat.name for mat in active_e.data.materials if mat]
+        common_prefix = self._find_common_prefix(e_mat_names)
+        for mat in active_e.data.materials:
+            if mat and mat.name.startswith(common_prefix):
+                mat.name = mat.name[len(common_prefix):]
+
+        # 步骤2: 复制E为F，按材质分离F
+        bpy.ops.object.select_all(action='DESELECT')
+        active_e.select_set(True)
+        context.view_layer.objects.active = active_e
+        bpy.ops.object.duplicate()
+        obj_f = context.selected_objects[0]
+
+        try:
+            bpy.ops.xqfa.separate_by_material('EXEC_DEFAULT', naming_mode='MATERIAL')
+        except Exception as e:
+            self.report({'WARNING'}, f"按材质分离失败: {e}")
+            return {'CANCELLED'}
+
+        separated_e_objs = [obj for obj in context.selected_objects if obj.type == 'MESH']
+
+        # 步骤3: 按物体顶点数匹配 A B C 和 分离物体
+        others_vert_counts = {obj: len(obj.data.vertices) for obj in selected_others}
+        matches = []  # (other_obj, sep_obj)
+        used_sep = set()
+        for other in selected_others:
+            other_count = others_vert_counts[other]
+            for sep_obj in separated_e_objs:
+                if id(sep_obj) in used_sep:
+                    continue
+                if len(sep_obj.data.vertices) == other_count:
+                    matches.append((other, sep_obj))
+                    used_sep.add(id(sep_obj))
+                    break
+
+        # 处理每对匹配
+        for other_obj, sep_obj in matches:
+            part_name = sep_obj.name  # 如 "Bangs"
+
+            # 重命名 other 的材质（添加后缀），物体也同时添加后缀重命名
+            for mat in other_obj.data.materials:
+                if mat:
+                    mat.name = f"{mat.name} {part_name}"
+            other_obj.name = f"{other_obj.name} {part_name}"
+
+            # E物体的对应材质槽替换为 other 的对应材质
+            for i in range(len(active_e.data.materials)):
+                e_mat = active_e.data.materials[i]
+                if e_mat and e_mat.name == part_name:
+                    if other_obj.data.materials and other_obj.data.materials[0]:
+                        active_e.data.materials[i] = other_obj.data.materials[0]
+                    break
+
+            # 步骤3a: 顶点组匹配重命名 (sep_obj为源, other为目标)
+            vg_mapping_name = prefix + part_name
+            bpy.ops.object.select_all(action='DESELECT')
+            sep_obj.select_set(True)
+            other_obj.select_set(True)
+            context.view_layer.objects.active = other_obj
+            try:
+                bpy.ops.xqfa.vertex_groups_match_rename('EXEC_DEFAULT', mapping_name=vg_mapping_name)
+            except Exception as e:
+                self.report({'WARNING'}, f"顶点组匹配重命名失败 ({part_name}): {e}")
+
+            # 形态键匹配重命名
+            if other_obj.data.shape_keys and sep_obj.data.shape_keys:
+                sk_mapping_name = vg_mapping_name + "_形态键"
+                try:
+                    bpy.ops.xqfa.shape_keys_match_rename('EXEC_DEFAULT', mapping_name=sk_mapping_name)
+                except Exception as e:
+                    self.report({'WARNING'}, f"形态键匹配重命名失败 ({part_name}): {e}")
+
+        # 步骤4: 不执行名称排序
+
+        # 步骤5: 为 A B C 添加骨架
+        self._add_armature(context, selected_others, active_e)
+
+        # 清理临时分离物体
+        bpy.ops.object.select_all(action='DESELECT')
+        for sep_obj in separated_e_objs:
+            sep_obj.select_set(True)
+        bpy.ops.object.delete()
+
+        self.report({'INFO'}, "分离模式完成")
+        return {'FINISHED'}
+
+classes = (
+    DATA_PT_vertex_group_tools,
+    XqfaVertexGroupPairItem,
+    XqfaVertexGroupMappingItem,
+    VGPairList,
+    O_VertexGroupMappingRemove,
+    O_VertexGroupMappingApply,
+    O_VertexGroupMappingReorder,
+    O_VertexGroupsDelAllSelected,
+    O_VertexGroupsCleanZeroWeight,
+    O_VertexGroupsDelNoneSelected,
+    O_VertexGroupsMatchRename,
+    O_VertexGroupsSortMatch,
+    XQFA_OT_SyncExtractUnpack,
+)
+
 def register():
-    bpy.utils.register_class(DATA_PT_vertex_group_tools)
-    bpy.utils.register_class(XqfaVertexGroupPairItem)
-    bpy.utils.register_class(XqfaVertexGroupMappingItem)
-    bpy.utils.register_class(VGPairList)
-    bpy.utils.register_class(O_VertexGroupMappingRemove)
-    bpy.utils.register_class(O_VertexGroupMappingApply)
-    bpy.utils.register_class(O_VertexGroupMappingReorder)
-    bpy.utils.register_class(O_VertexGroupsDelAllSelected)
-    bpy.utils.register_class(O_VertexGroupsCleanZeroWeight)
-    bpy.utils.register_class(O_VertexGroupsDelNoneSelected)
-    bpy.utils.register_class(O_VertexGroupsMatchRename)
-    bpy.utils.register_class(O_VertexGroupsSortMatch)
+    for cls in classes:
+        bpy.utils.register_class(cls)
     bpy.types.Scene.xqfa_vertex_group_mappings = bpy.props.CollectionProperty(type=XqfaVertexGroupMappingItem)
 
 def unregister():
+    for cls in classes:
+        bpy.utils.unregister_class(cls)
     if hasattr(bpy.types.Scene, 'xqfa_vertex_group_mappings'):
         del bpy.types.Scene.xqfa_vertex_group_mappings
-    bpy.utils.unregister_class(DATA_PT_vertex_group_tools)
-    bpy.utils.unregister_class(XqfaVertexGroupPairItem)
-    bpy.utils.unregister_class(XqfaVertexGroupMappingItem)
-    bpy.utils.unregister_class(VGPairList)
-    bpy.utils.unregister_class(O_VertexGroupMappingRemove)
-    bpy.utils.unregister_class(O_VertexGroupMappingApply)
-    bpy.utils.unregister_class(O_VertexGroupMappingReorder)
-    bpy.utils.unregister_class(O_VertexGroupsDelAllSelected)
-    bpy.utils.unregister_class(O_VertexGroupsCleanZeroWeight)
-    bpy.utils.unregister_class(O_VertexGroupsDelNoneSelected)
-    bpy.utils.unregister_class(O_VertexGroupsMatchRename)
-    bpy.utils.unregister_class(O_VertexGroupsSortMatch)

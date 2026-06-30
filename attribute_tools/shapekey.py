@@ -91,30 +91,26 @@ class DATA_PT_shape_key_tools(bpy.types.Panel):
         box.label(text="映射记录", icon="COLLAPSEMENU")
         for idx, item in enumerate(mappings):
             row = box.row(align=True)
-            col_exp = row.column(align=True)
-            sub = col_exp.row(align=True)
             icon = "TRIA_DOWN" if item.expanded else "TRIA_RIGHT"
-            sub.prop(item, "expanded", icon=icon, icon_only=True, emboss=False)
+            row.prop(item, "expanded", icon=icon, icon_only=True, emboss=False)
             if not item.label:
                 item.label = f"映射 {idx + 1}"
-            sub.prop(item, "label", text="")
-            sub.label(text=f"({len(item.pairs)}项)")
-            col_btns = row.column(align=True)
-            col_btns.alignment = 'RIGHT'
-            btns = col_btns.row(align=True)
-            op_lr = btns.operator(O_ShapeKeyMappingApply.bl_idname, text="→")
+            row.prop(item, "label", text="")
+            row.label(text=f"({len(item.pairs)}项)")
+            row.separator(factor=1.0)
+            op_lr = row.operator(O_ShapeKeyMappingApply.bl_idname, text="", icon="FORWARD")
             op_lr.index = idx
             op_lr.direction = "LEFT_TO_RIGHT"
-            op_rl = btns.operator(O_ShapeKeyMappingApply.bl_idname, text="←")
+            op_rl = row.operator(O_ShapeKeyMappingApply.bl_idname, text="", icon="BACK")
             op_rl.index = idx
             op_rl.direction = "RIGHT_TO_LEFT"
-            op_l_order = btns.operator(O_ShapeKeyMappingReorder.bl_idname, text="L↓")
+            op_l_order = row.operator(O_ShapeKeyMappingReorder.bl_idname, text="", icon="EVENT_L")
             op_l_order.index = idx
             op_l_order.direction = "LEFT"
-            op_r_order = btns.operator(O_ShapeKeyMappingReorder.bl_idname, text="R↓")
+            op_r_order = row.operator(O_ShapeKeyMappingReorder.bl_idname, text="", icon="EVENT_R")
             op_r_order.index = idx
             op_r_order.direction = "RIGHT"
-            btns.operator(O_ShapeKeyMappingRemove.bl_idname, text="", icon="X").index = idx
+            row.operator(O_ShapeKeyMappingRemove.bl_idname, text="", icon="X").index = idx
             if item.expanded:
                 box.template_list(
                     "SKPairList",
@@ -141,6 +137,12 @@ class O_ShapeKeysMatchRename(bpy.types.Operator):
         max=1.0,
         step=0.01,
         precision=3
+    )
+
+    mapping_name: bpy.props.StringProperty(
+        name="映射名称",
+        description="存储映射记录时使用的标签名称",
+        default=""
     )
 
     def invoke(self, context, event):
@@ -184,7 +186,7 @@ class O_ShapeKeysMatchRename(bpy.types.Operator):
             return
         mappings = scene.xqfa_shape_key_mappings
         item = mappings.add()
-        item.label = f"映射 {len(mappings)}"
+        item.label = self.mapping_name if self.mapping_name else f"映射 {len(mappings)}"
         item.expanded = False
         pair_items = result.get('pair_items', [])
         for left_name, right_name, similarity in pair_items:

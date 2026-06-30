@@ -80,10 +80,10 @@ class O_NoBoneDelVg(bpy.types.Operator):
 
 ########################## Divider ##########################
 
-class O_AddBoneNumber(bpy.types.Operator):
+class O_SelectWeightedBones(bpy.types.Operator):
     bl_idname = "xqfa.vertex_groups_add_bone_number"
-    bl_label = "添加骨骼编号"
-    bl_description = "对有权重骨添加骨骼编号"
+    bl_label = "选择有权重骨骼"
+    bl_description = "选择绑定到当前网格物体且有权重的骨骼"
     
     def execute(self, context):
         try:
@@ -107,30 +107,23 @@ class O_AddBoneNumber(bpy.types.Operator):
                 # 将顶点和权重信息添加到字典中
                 vertex_group_info[group_name].append((vertex.index, weight))
 
-        # 添加编号
         bpy.ops.object.mode_set(mode='OBJECT')
         bpy.context.view_layer.objects.active = SourceArmature
         bpy.ops.object.mode_set(mode='POSE')
-        bone_number = 0
+        selected_count = 0
         for bone in SourceArmature.pose.bones:
-            for group_name, vertex_info in vertex_group_info.items():
-                if bone.name == group_name and vertex_info: #如果有对应顶点组且有权重
-                    # 正则判断是否已经有编号
-                    pattern = re.compile(r'^b\d+:')
-                    if pattern.match(bone.name):
-                        bone.name = re.sub(r'^b\d+:', '', bone.name)
-                    bone_number = bone_number + 1
-                    bone.name = "b" + "{:03d}".format(bone_number) + ":" + bone.name
-                    print(f"{bone.name}")
-                    break
+            bone.bone.select = False
+            if bone.name in vertex_group_info and vertex_group_info[bone.name]:
+                bone.bone.select = True
+                selected_count += 1
 
-        self.report({'INFO'}, f"已添加{bone_number}个骨骼编号！")
+        self.report({'INFO'}, f"已选择 {selected_count} 个有权重骨骼")
         return {'FINISHED'}
     
-class O_RemoveBoneNumber(bpy.types.Operator):
+class O_SelectUnweightedBones(bpy.types.Operator):
     bl_idname = "xqfa.vertex_groups_remove_bone_number"
-    bl_label = "移除骨骼编号"
-    bl_description = ""
+    bl_label = "选择无权重骨骼"
+    bl_description = "选择绑定到当前网格物体且无权重的骨骼"
     
     def execute(self, context):
         try:
@@ -139,16 +132,30 @@ class O_RemoveBoneNumber(bpy.types.Operator):
         except:
             self.report({'ERROR'}, "似乎没有选择对象") 
             return {'FINISHED'}
-        
+        # 创建一个字典来存储顶点组的信息
+        vertex_group_info = {}
+        for group in SourceMesh.vertex_groups:
+            vertex_group_info[group.name] = []
+
+        # 遍历每个顶点
+        for vertex in SourceMesh.data.vertices:
+            for group in vertex.groups:
+                group_index = group.group
+                group_name = SourceMesh.vertex_groups[group_index].name
+                weight = group.weight
+                vertex_group_info[group_name].append((vertex.index, weight))
+
         bpy.ops.object.mode_set(mode='OBJECT')
         bpy.context.view_layer.objects.active = SourceArmature
         bpy.ops.object.mode_set(mode='POSE')
+        selected_count = 0
         for bone in SourceArmature.pose.bones:
-            bone.name = re.sub(r'^b\d+:', '', bone.name)
-            print(f"{bone.name}")
+            bone.bone.select = False
+            if bone.name not in vertex_group_info or not vertex_group_info[bone.name]:
+                bone.bone.select = True
+                selected_count += 1
 
-
-        self.report({'INFO'}, "已移除骨骼编号！")
+        self.report({'INFO'}, f"已选择 {selected_count} 个无权重骨骼")
         return {'FINISHED'}
 
 ########################## Divider ##########################
@@ -521,8 +528,8 @@ class P_VertexGroups(bpy.types.Panel):
         row.operator(O_NoVgDelBone.bl_idname, text=O_NoVgDelBone.bl_label, icon="BONE_DATA")
         row.operator(O_NoBoneDelVg.bl_idname, text=O_NoBoneDelVg.bl_label, icon="GROUP_VERTEX")
         row = col.row(align=True)
-        row.operator(O_AddBoneNumber.bl_idname, text=O_AddBoneNumber.bl_label, icon="LINENUMBERS_ON")
-        row.operator(O_RemoveBoneNumber.bl_idname, text=O_RemoveBoneNumber.bl_label, icon="LINENUMBERS_ON")
+        row.operator(O_SelectWeightedBones.bl_idname, text=O_SelectWeightedBones.bl_label, icon="LINENUMBERS_ON")
+        row.operator(O_SelectUnweightedBones.bl_idname, text=O_SelectUnweightedBones.bl_label, icon="LINENUMBERS_ON")
 
 
 
@@ -531,8 +538,8 @@ class P_VertexGroups(bpy.types.Panel):
 def register():
     bpy.utils.register_class(O_NoVgDelBone)
     bpy.utils.register_class(O_NoBoneDelVg)
-    bpy.utils.register_class(O_AddBoneNumber)
-    bpy.utils.register_class(O_RemoveBoneNumber)
+    bpy.utils.register_class(O_SelectWeightedBones)
+    bpy.utils.register_class(O_SelectUnweightedBones)
     bpy.utils.register_class(BONE_OT_merge_to_parent)
     bpy.utils.register_class(BONE_OT_merge_to_active)
     bpy.utils.register_class(VG_OT_merge_to_parent)
@@ -548,8 +555,8 @@ def register():
 def unregister():
     bpy.utils.unregister_class(O_NoVgDelBone)
     bpy.utils.unregister_class(O_NoBoneDelVg)
-    bpy.utils.unregister_class(O_AddBoneNumber)
-    bpy.utils.unregister_class(O_RemoveBoneNumber)
+    bpy.utils.unregister_class(O_SelectWeightedBones)
+    bpy.utils.unregister_class(O_SelectUnweightedBones)
     bpy.utils.unregister_class(BONE_OT_merge_to_parent)
     bpy.utils.unregister_class(BONE_OT_merge_to_active)
     bpy.utils.unregister_class(VG_OT_merge_to_parent)

@@ -21,7 +21,6 @@ class XQFA_PT_Demo(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         col = layout.column()
-        col.operator(XQFA_OT_NumberToBone.bl_idname, icon="ARROW_LEFTRIGHT")
         col.operator(XQFA_OT_MiniPlane.bl_idname, icon="MESH_CUBE")
         col.operator(XQFA_OT_SeparateByMaterial.bl_idname, icon="MATERIAL")
         col.operator(XQFA_OT_BatchCleanMaterials.bl_idname, icon="TRASH")
@@ -130,91 +129,6 @@ class XQFA_OT_MiniPlane(bpy.types.Operator):
                 f"顶点组2({vg2.name})权重: {self.secondary_weight}"
             )
 
-        return {'FINISHED'}
-
-
-
-class XQFA_OT_NumberToBone(bpy.types.Operator):
-    bl_idname = "xqfa.num_to_bone"
-    bl_label = "数字顶点组<-->骨骼名称"
-    bl_description = "自动执行：合并->匹配重命名->排序->按材质分离->添加骨架"
-    bl_options = {'REGISTER', 'UNDO'}
-
-    @classmethod
-    def poll(cls, context):
-        return context.active_object is not None and len(context.selected_objects) > 1
-
-    def execute(self, context):
-        # 1. 获取初始状态
-        active_e = context.active_object
-        selected_others = [obj for obj in context.selected_objects if obj != active_e and obj.type == 'MESH']
-        
-        if not selected_others:
-            self.report({'ERROR'}, "请选择除活动物体外的至少一个网格物体")
-            return {'CANCELLED'}
-
-        # --- 步骤 5: 合并选择物体 A B C D 到 A ---
-        target_a = selected_others[0]
-        bpy.ops.object.select_all(action='DESELECT')
-        for obj in selected_others:
-            obj.select_set(True)
-        context.view_layer.objects.active = target_a
-        bpy.ops.object.join()
-
-        # --- 步骤 6: 执行匹配重命名 (E 为源, A 为目标) ---
-        bpy.ops.object.select_all(action='DESELECT')
-        active_e.select_set(True)
-        target_a.select_set(True)
-        context.view_layer.objects.active = target_a
-        
-        try:
-            bpy.ops.xqfa.vertex_groups_match_rename()
-        except Exception as e:
-            self.report({'WARNING'}, f"匹配重命名失败: {e}")
-
-        # --- 步骤 7: 执行名称排序 (A 为源, E 为目标) ---
-        bpy.ops.object.select_all(action='DESELECT')
-        target_a.select_set(True)
-        active_e.select_set(True)
-        context.view_layer.objects.active = target_a
-        
-        try:
-            bpy.ops.xqfa.vertex_groups_sort_match()
-        except Exception as e:
-            self.report({'WARNING'}, f"排序失败: {e}")
-
-        # --- 步骤 8: 按材质分离 A (使用材质名作为分离后物体名称) ---
-        bpy.ops.object.select_all(action='DESELECT')
-        target_a.select_set(True)
-        context.view_layer.objects.active = target_a
-        
-        try:
-            bpy.ops.xqfa.separate_by_material(naming_mode='MATERIAL')
-        except Exception as e:
-            self.report({'WARNING'}, f"按材质分离失败: {e}")
-
-        separated_objs = context.selected_objects
-
-        # === 添加骨架 ===
-        bpy.ops.object.select_all(action='DESELECT')
-        for obj in separated_objs:
-            if obj.type == 'MESH':
-                obj.select_set(True)
-        context.view_layer.objects.active = active_e
-
-        armature_modifiers = [mod for mod in active_e.modifiers if mod.type == 'ARMATURE']
-        if armature_modifiers:
-            src_mod = armature_modifiers[0]
-            for obj in separated_objs:
-                if obj.type == 'MESH':
-                    new_mod = obj.modifiers.new(name="Armature", type='ARMATURE')
-                    new_mod.object = src_mod.object
-                    new_mod.use_bone_envelopes = src_mod.use_bone_envelopes
-                    new_mod.use_vertex_groups = src_mod.use_vertex_groups
-                    new_mod.use_deform_preserve_volume = src_mod.use_deform_preserve_volume
-                    new_mod.vertex_group = src_mod.vertex_group
-
-        self.report({'INFO'}, "已完成合并、匹配重命名、排序、按材质分离及添加骨架")
         return {'FINISHED'}
 
 
@@ -620,7 +534,6 @@ class XQFA_OT_ConvertCustomNormals(bpy.types.Operator):
 
 classes = (
     XQFA_PT_Demo,
-    XQFA_OT_NumberToBone,
     XQFA_OT_MiniPlane,
     XQFA_OT_SeparateByMaterial,
     XQFA_OT_BatchCleanMaterials,

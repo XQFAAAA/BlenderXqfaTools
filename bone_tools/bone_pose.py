@@ -2,17 +2,22 @@
 import bpy
 import math
 from mathutils import Euler, Matrix, Vector, Quaternion
-import os 
+import os
 import csv
 from bpy_extras.io_utils import ImportHelper
 
 ########################## Divider ##########################
 
+# 骨骼变换数据剪贴板（模块级，无需注册）
+# 形如 {'POSITION': Vector, 'EULER': Euler, 'QUATERNION': Quaternion, 'MATRIX': Matrix, 'MATRIX_BASIS': Matrix}
+_bone_pose_clipboard = {}
+
 class PG_BonePoseWorldProps(bpy.types.PropertyGroup):
     #注册切换矩阵显示的布尔值
     pose_matrix: bpy.props.BoolProperty(
         name="矩阵", 
-        default=False
+        default=False,
+        description="基于骨架坐标系"
     )
 
     # 新增：用于控制移动操作的轴向开关
@@ -146,78 +151,6 @@ class PG_BonePoseWorldProps(bpy.types.PropertyGroup):
     )    
 
 
-class O_BonePoseYUp(bpy.types.Operator):
-    bl_idname = "xqfa.pose_y_up"
-    bl_label = "90 0 0"
-    bl_description = "选中骨骼Y轴向上右手坐标系, 请先应用骨架旋转"
-
-    def execute(self, context):
-        obj = context.active_object
-        if obj and obj.type == 'ARMATURE':
-            if context.selected_pose_bones:
-                order_selected_pose_bones = []
-                for bone1 in obj.pose.bones:
-                    for bone2 in context.selected_pose_bones:
-                        if bone1 == bone2:
-                            order_selected_pose_bones.append(bone1)
-
-                for bone in order_selected_pose_bones:
-                    # 获取原始缩放
-                    original_scale = bone.matrix.to_scale()
-                    
-                    # 创建新旋转
-                    new_rotation = Euler((math.radians(90), math.radians(0), math.radians(0)), 'XYZ')
-                    new_matrix = new_rotation.to_matrix().to_4x4()
-                    
-                    # 应用原始缩放
-                    new_matrix @= Matrix.Scale(original_scale[0], 4, (1, 0, 0))
-                    new_matrix @= Matrix.Scale(original_scale[1], 4, (0, 1, 0))
-                    new_matrix @= Matrix.Scale(original_scale[2], 4, (0, 0, 1))
-                    
-                    # 保持原始位置
-                    new_matrix.translation = bone.matrix.translation
-                    
-                    bone.matrix = new_matrix
-                    bpy.context.view_layer.update()
-
-        return {"FINISHED"}
-    
-class O_BonePoseZUp(bpy.types.Operator):
-    bl_idname = "xqfa.pose_z_up"
-    bl_label = "0 0 0"
-    bl_description = "选中骨骼Z轴向上右手坐标系, 请先应用骨架旋转"
-
-    def execute(self, context):
-        obj = context.active_object
-        if obj and obj.type == 'ARMATURE':
-            if context.selected_pose_bones:
-                order_selected_pose_bones = []
-                for bone1 in obj.pose.bones:
-                    for bone2 in context.selected_pose_bones:
-                        if bone1 == bone2:
-                            order_selected_pose_bones.append(bone1)
-
-                for bone in order_selected_pose_bones:
-                    # 获取原始缩放
-                    original_scale = bone.matrix.to_scale()
-                    
-                    # 创建新旋转
-                    new_rotation = Euler((math.radians(0), math.radians(0), math.radians(0)), 'XYZ')
-                    new_matrix = new_rotation.to_matrix().to_4x4()
-                    
-                    # 应用原始缩放
-                    new_matrix @= Matrix.Scale(original_scale[0], 4, (1, 0, 0))
-                    new_matrix @= Matrix.Scale(original_scale[1], 4, (0, 1, 0))
-                    new_matrix @= Matrix.Scale(original_scale[2], 4, (0, 0, 1))
-                    
-                    # 保持原始位置
-                    new_matrix.translation = bone.matrix.translation
-                    
-                    bone.matrix = new_matrix
-                    bpy.context.view_layer.update()
-
-        return {"FINISHED"}
-
 class O_BonePoseUpRight(bpy.types.Operator):
     bl_idname = "xqfa.pose_upright"
     bl_label = "自动摆正"
@@ -262,85 +195,53 @@ class O_BonePoseUpRight(bpy.types.Operator):
 
         return {"FINISHED"}
 
-class O_BonePoseX90(bpy.types.Operator):
-    bl_idname = "xqfa.pose_x90"
-    bl_label = "绕x旋转90°"
-    bl_description = ""
+class O_BonePoseAutoStraighten(bpy.types.Operator):
+    bl_idname = "xqfa.pose_auto_straighten"
+    bl_label = "自动拉直"
+    bl_description = "将选中骨骼按骨骼链分组，把每条链根骨骼的四元数粘贴到所有子级"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return (context.object and
+                context.object.type == 'ARMATURE' and
+                context.mode == 'POSE' and
+                context.selected_pose_bones)
 
     def execute(self, context):
+        selected = set(context.selected_pose_bones)
+        if not selected:
+            self.report({'WARNING'}, "未选中骨骼")
+            return {'CANCELLED'}
 
-        obj = context.active_object
-        if obj and obj.type == 'ARMATURE': # 检查对象是否为骨骼对象
-            if context.selected_pose_bones: #有选择骨骼
+        # 构建子级映射（仅在选中集合内）
+        children_map = {}
+        for b in selected:
+            p = b.parent
+            if p in selected:
+                children_map.setdefault(p, []).append(b)
 
-                order_selected_pose_bones = []
-                for bone1 in obj.pose.bones: #遍历骨架中的每一根骨骼，若被选中则加入list, 保证顺序正确
-                    for bone2 in context.selected_pose_bones:
-                        if bone1 == bone2 :
-                            order_selected_pose_bones.append(bone1)
+        # 根骨骼：无父级或父级不在选中集合中
+        roots = [b for b in selected if b.parent is None or b.parent not in selected]
 
-                for bone in order_selected_pose_bones:
-                    # 获取骨骼的原始矩阵
-                    original_matrix = bone.matrix.copy()
-                    # 变换矩阵
-                    new_rotation = Euler((math.radians(90), math.radians(0), math.radians(0)), 'XYZ')
-                    rotation_matrix = new_rotation.to_matrix().to_4x4()
-                    # 相乘
-                    new_matrix = rotation_matrix @ original_matrix
-                    # 使用原坐标
-                    new_matrix.translation = bone.matrix.translation
-                    # 赋值
-                    bone.matrix = new_matrix
-                    # 刷新
-                    bpy.context.view_layer.update()
+        straightened_count = 0
+        for root in roots:
+            root_quat = root.matrix.to_quaternion()
+            # 沿骨骼链向下传播根骨骼的四元数
+            stack = [root]
+            while stack:
+                bone = stack.pop()
+                for child in children_map.get(bone, []):
+                    # 应用根骨骼四元数，保留子级原位置
+                    new_matrix = root_quat.to_matrix().to_4x4()
+                    new_matrix.translation = child.matrix.translation
+                    child.matrix = new_matrix
+                    straightened_count += 1
+                    stack.append(child)
+                    context.view_layer.update()
 
-        return {"FINISHED"}
-
-class O_BonePoseY90(bpy.types.Operator):
-    bl_idname = "xqfa.pose_y90"
-    bl_label = "绕y旋转90°"
-    bl_description = ""
-    def execute(self, context):
-        obj = context.active_object
-        if obj and obj.type == 'ARMATURE': # 检查对象是否为骨骼对象
-            if context.selected_pose_bones: #有选择骨骼
-                order_selected_pose_bones = []
-                for bone1 in obj.pose.bones: #遍历骨架中的每一根骨骼，若被选中则加入list, 保证顺序正确
-                    for bone2 in context.selected_pose_bones:
-                        if bone1 == bone2 :
-                            order_selected_pose_bones.append(bone1)
-                for bone in order_selected_pose_bones:
-                    original_matrix = bone.matrix.copy()
-                    new_rotation = Euler((math.radians(0), math.radians(90), math.radians(0)), 'XYZ')
-                    rotation_matrix = new_rotation.to_matrix().to_4x4()
-                    new_matrix = rotation_matrix @ original_matrix
-                    new_matrix.translation = bone.matrix.translation
-                    bone.matrix = new_matrix
-                    bpy.context.view_layer.update()
-        return {"FINISHED"}
-    
-class O_BonePoseZ90(bpy.types.Operator):
-    bl_idname = "xqfa.pose_z90"
-    bl_label = "绕z旋转90°"
-    bl_description = ""
-    def execute(self, context):
-        obj = context.active_object
-        if obj and obj.type == 'ARMATURE': # 检查对象是否为骨骼对象
-            if context.selected_pose_bones: #有选择骨骼
-                order_selected_pose_bones = []
-                for bone1 in obj.pose.bones: #遍历骨架中的每一根骨骼，若被选中则加入list, 保证顺序正确
-                    for bone2 in context.selected_pose_bones:
-                        if bone1 == bone2 :
-                            order_selected_pose_bones.append(bone1)
-                for bone in order_selected_pose_bones:
-                    original_matrix = bone.matrix.copy()
-                    new_rotation = Euler((math.radians(0), math.radians(0), math.radians(90)), 'XYZ')
-                    rotation_matrix = new_rotation.to_matrix().to_4x4()
-                    new_matrix = rotation_matrix @ original_matrix
-                    new_matrix.translation = bone.matrix.translation
-                    bone.matrix = new_matrix
-                    bpy.context.view_layer.update()
-        return {"FINISHED"}
+        self.report({'INFO'}, f"已拉直 {len(roots)} 条骨骼链，共 {straightened_count} 根子级骨骼")
+        return {'FINISHED'}
 
 class O_BonePoseApply(bpy.types.Operator):
     bl_idname = "xqfa.pose_apply"
@@ -1122,6 +1023,123 @@ class O_BonePoseRemoveAllConstraints(bpy.types.Operator):
         self.report({'INFO'}, f"已从 {len(selected_bones)} 根骨骼上移除 {removed_count} 个约束")
         return {'FINISHED'}
 
+class O_BonePoseCopyPaste(bpy.types.Operator):
+    """复制/粘贴骨骼变换数据（位置、欧拉、四元数、矩阵、姿态变换矩阵）"""
+    bl_idname = "xqfa.pose_copy_paste"
+    bl_label = "复制/粘贴"
+    bl_description = "复制或粘贴骨骼变换数据"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    data_type: bpy.props.EnumProperty(
+        name="数据类型",
+        items=[
+            ('POSITION', "位置", ""),
+            ('EULER', "欧拉", ""),
+            ('QUATERNION', "四元数", ""),
+            ('MATRIX', "矩阵", ""),
+            ('MATRIX_BASIS', "姿态变换矩阵", ""),
+        ],
+    )
+    action: bpy.props.EnumProperty(
+        name="操作",
+        items=[
+            ('COPY', "复制", ""),
+            ('PASTE', "粘贴", ""),
+        ],
+    )
+    paste_order: bpy.props.EnumProperty(
+        name="粘贴顺序",
+        description="粘贴到多根骨骼时的应用顺序（父级到子级或子级到父级）",
+        items=[
+            ('NONE', "默认", "按选择顺序粘贴"),
+            ('PARENT_TO_CHILD', "父到子", "先粘贴父级骨骼，再粘贴子级骨骼"),
+            ('CHILD_TO_PARENT', "子到父", "先粘贴子级骨骼，再粘贴父级骨骼"),
+        ],
+        default='NONE',
+    )
+
+    # 数据类型中文名，用于 report
+    _LABELS = {
+        'POSITION': '位置', 'EULER': '欧拉',
+        'QUATERNION': '四元数', 'MATRIX': '矩阵',
+        'MATRIX_BASIS': '姿态变换矩阵',
+    }
+
+    @classmethod
+    def poll(cls, context):
+        return (context.object and
+                context.object.type == 'ARMATURE' and
+                context.object.mode == 'POSE' and
+                context.active_pose_bone)
+
+    def execute(self, context):
+        bone = context.active_pose_bone
+        dt = self.data_type
+        act = self.action
+        label = self._LABELS[dt]
+
+        if act == 'COPY':
+            if dt == 'POSITION':
+                _bone_pose_clipboard['POSITION'] = bone.matrix.translation.copy()
+            elif dt == 'EULER':
+                _bone_pose_clipboard['EULER'] = bone.matrix.to_euler().copy()
+            elif dt == 'QUATERNION':
+                _bone_pose_clipboard['QUATERNION'] = bone.matrix.to_quaternion().copy()
+            elif dt == 'MATRIX':
+                _bone_pose_clipboard['MATRIX'] = bone.matrix.copy()
+            elif dt == 'MATRIX_BASIS':
+                _bone_pose_clipboard['MATRIX_BASIS'] = bone.matrix_basis.copy()
+            self.report({'INFO'}, f"已复制{label}")
+            return {'FINISHED'}
+
+        # PASTE：对所有选中骨骼生效
+        if dt not in _bone_pose_clipboard:
+            self.report({'WARNING'}, f"剪贴板中无{label}数据")
+            return {'CANCELLED'}
+
+        target_bones = context.selected_pose_bones or [bone]
+        # 按父子级关系排序
+        paste_order = self.paste_order
+        if paste_order != 'NONE':
+            selected_names = {b.name for b in target_bones}
+            def selected_ancestor_count(bone):
+                count = 0
+                parent = bone.parent
+                while parent is not None:
+                    if parent.name in selected_names:
+                        count += 1
+                    parent = parent.parent
+                return count
+            target_bones = sorted(target_bones, key=selected_ancestor_count)
+            if paste_order == 'CHILD_TO_PARENT':
+                target_bones = list(reversed(target_bones))
+
+        value = _bone_pose_clipboard[dt]
+        pasted_count = 0
+        for pbone in target_bones:
+            if dt == 'POSITION':
+                new_matrix = pbone.matrix.copy()
+                new_matrix.translation = value
+                pbone.matrix = new_matrix
+            elif dt == 'EULER':
+                new_matrix = value.to_matrix().to_4x4()
+                new_matrix.translation = pbone.matrix.translation
+                pbone.matrix = new_matrix
+            elif dt == 'QUATERNION':
+                new_matrix = value.to_matrix().to_4x4()
+                new_matrix.translation = pbone.matrix.translation
+                pbone.matrix = new_matrix
+            elif dt == 'MATRIX':
+                pbone.matrix = value.copy()
+            elif dt == 'MATRIX_BASIS':
+                pbone.matrix_basis = value.copy()
+            pasted_count += 1
+            context.view_layer.update()
+
+        self.report({'INFO'}, f"已粘贴{label}到 {pasted_count} 根骨骼")
+        return {'FINISHED'}
+
+
 class P_BonePose(bpy.types.Panel):
     bl_idname = "X_PT_BonePose"
     bl_label = "姿态模式"
@@ -1141,14 +1159,8 @@ class P_BonePose(bpy.types.Panel):
         if context.mode == "POSE":
             col = layout.column(align=True)
             row = col.row(align=True)
-            row.operator(O_BonePoseYUp.bl_idname, text=O_BonePoseYUp.bl_label)
-            row.operator(O_BonePoseZUp.bl_idname, text=O_BonePoseZUp.bl_label)
             row.operator(O_BonePoseUpRight.bl_idname, text=O_BonePoseUpRight.bl_label)
-            #摆正后各方向旋转
-            row = col.row(align=True)
-            row.operator(O_BonePoseX90.bl_idname, text="X 90", icon="DRIVER_ROTATIONAL_DIFFERENCE")
-            row.operator(O_BonePoseY90.bl_idname, text="Y 90", icon="DRIVER_ROTATIONAL_DIFFERENCE")
-            row.operator(O_BonePoseZ90.bl_idname, text="Z 90", icon="DRIVER_ROTATIONAL_DIFFERENCE")
+            row.operator(O_BonePoseAutoStraighten.bl_idname, text=O_BonePoseAutoStraighten.bl_label)
             
             #快速应用为静止姿态，而物体不形变（先物体应用骨骼修改器）
             col = layout.column(align=True)
@@ -1215,17 +1227,39 @@ class P_BonePose(bpy.types.Panel):
             if props.pose_matrix:
                 split = layout.split(align=True)
                 col = split.column(align=True)
-                col.label(text="基于骨架坐标系")
-                row = col.row()
+                row = col.row(align=True)
                 row.label(text="位置")
+                row.separator(factor=1.0)
+                op = row.operator(O_BonePoseCopyPaste.bl_idname, text="", icon='COPYDOWN')
+                op.data_type = 'POSITION'; op.action = 'COPY'
+                op = row.operator(O_BonePoseCopyPaste.bl_idname, text="", icon='PASTEDOWN')
+                op.data_type = 'POSITION'; op.action = 'PASTE'
                 col.prop(props, "position", text="")
-                row = col.row()
+                row = col.row(align=True)
                 row.label(text="欧拉")
+                row.separator(factor=1.0)
+                op = row.operator(O_BonePoseCopyPaste.bl_idname, text="", icon='COPYDOWN')
+                op.data_type = 'EULER'; op.action = 'COPY'
+                op = row.operator(O_BonePoseCopyPaste.bl_idname, text="", icon='PASTEDOWN')
+                op.data_type = 'EULER'; op.action = 'PASTE'
                 col.prop(props, "euler_rotation", text="")
-                col.prop(props, "quaternion_rotation", text="四元数")
+                row = col.row(align=True)
+                row.label(text="四元数")
+                row.separator(factor=1.0)
+                op = row.operator(O_BonePoseCopyPaste.bl_idname, text="", icon='COPYDOWN')
+                op.data_type = 'QUATERNION'; op.action = 'COPY'
+                op = row.operator(O_BonePoseCopyPaste.bl_idname, text="", icon='PASTEDOWN')
+                op.data_type = 'QUATERNION'; op.action = 'PASTE'
+                col.prop(props, "quaternion_rotation", text="")
                 #col.prop(context.active_pose_bone, "matrix", text="矩阵")
                 #blender按列读取，但又按行填充，需要手动转置
-                col.label(text="矩阵:")
+                row = col.row(align=True)
+                row.label(text="矩阵:")
+                row.separator(factor=1.0)
+                op = row.operator(O_BonePoseCopyPaste.bl_idname, text="", icon='COPYDOWN')
+                op.data_type = 'MATRIX'; op.action = 'COPY'
+                op = row.operator(O_BonePoseCopyPaste.bl_idname, text="", icon='PASTEDOWN')
+                op.data_type = 'MATRIX'; op.action = 'PASTE'
                 row = col.row(align=True) #align消除间距
                 row.prop(context.active_pose_bone, "matrix", index=0, text="")
                 row.prop(context.active_pose_bone, "matrix", index=4, text="")
@@ -1249,7 +1283,13 @@ class P_BonePose(bpy.types.Panel):
 
                 #局部矩阵
                 #col.prop(context.active_pose_bone, "matrix_basis", text="矩阵")
-                col.label(text="局部姿态矩阵:")
+                row = col.row(align=True)
+                row.label(text="姿态变换矩阵:")
+                row.separator(factor=1.0)
+                op = row.operator(O_BonePoseCopyPaste.bl_idname, text="", icon='COPYDOWN')
+                op.data_type = 'MATRIX_BASIS'; op.action = 'COPY'
+                op = row.operator(O_BonePoseCopyPaste.bl_idname, text="", icon='PASTEDOWN')
+                op.data_type = 'MATRIX_BASIS'; op.action = 'PASTE'
                 row = col.row(align=True) #align消除间距
                 row.prop(context.active_pose_bone, "matrix_basis", index=0, text="")
                 row.prop(context.active_pose_bone, "matrix_basis", index=4, text="")
@@ -1273,60 +1313,38 @@ class P_BonePose(bpy.types.Panel):
 
 
 
-
-
 # 注册插件
+classes = (
+    PG_BonePoseWorldProps,
+    O_BonePoseUpRight,
+    O_BonePoseAutoStraighten,
+    O_BonePoseApply,
+    O_SwapPoseRest,
+    O_InCSVSel,
+    O_BonePosePrint,
+    O_BonePoseMoveToActive,
+    O_BonePoseRotateToActive,
+    O_BonePoseXYZRotateToActive,
+    O_BonePoseXYZResizeToActive,
+    O_BonePoseUnlockAll,
+    O_BonePoseRemoveAllConstraints,
+    O_BonePoseCopyPaste,
+    P_BonePose,
+)
+
 def register():
+    for cls in classes:
+        bpy.utils.register_class(cls)
     bpy.types.Scene.bone_sel_col = bpy.props.IntProperty(
         name="骨骼列",
         default=0,
         min=0,
     )
-    bpy.utils.register_class(PG_BonePoseWorldProps)
     bpy.types.Scene.bone_pose_world_props = bpy.props.PointerProperty(type=PG_BonePoseWorldProps)
-    
-    bpy.utils.register_class(O_BonePoseYUp)
-    bpy.utils.register_class(O_BonePoseZUp)
-    bpy.utils.register_class(O_BonePoseUpRight)
-    bpy.utils.register_class(O_BonePoseX90)
-    bpy.utils.register_class(O_BonePoseY90)
-    bpy.utils.register_class(O_BonePoseZ90)
-    bpy.utils.register_class(O_BonePoseApply)
-    bpy.utils.register_class(O_SwapPoseRest)
-    bpy.utils.register_class(O_InCSVSel)
-    bpy.utils.register_class(O_BonePosePrint)
-    bpy.utils.register_class(O_BonePoseMoveToActive)
-    bpy.utils.register_class(O_BonePoseRotateToActive)
-    bpy.utils.register_class(O_BonePoseXYZRotateToActive)
-    bpy.utils.register_class(O_BonePoseXYZResizeToActive)
-    bpy.utils.register_class(O_BonePoseUnlockAll)
-    bpy.utils.register_class(O_BonePoseRemoveAllConstraints)
-    bpy.utils.register_class(P_BonePose)
 
 
-
-
-# 注销插件
 def unregister():
     del bpy.types.Scene.bone_sel_col
-
-    bpy.utils.unregister_class(PG_BonePoseWorldProps)
     del bpy.types.Scene.bone_pose_world_props
-
-    bpy.utils.unregister_class(O_BonePoseYUp)
-    bpy.utils.unregister_class(O_BonePoseZUp)
-    bpy.utils.unregister_class(O_BonePoseUpRight)
-    bpy.utils.unregister_class(O_BonePoseX90)
-    bpy.utils.unregister_class(O_BonePoseY90)
-    bpy.utils.unregister_class(O_BonePoseZ90)
-    bpy.utils.unregister_class(O_BonePoseApply)
-    bpy.utils.unregister_class(O_SwapPoseRest)
-    bpy.utils.unregister_class(O_InCSVSel)
-    bpy.utils.unregister_class(O_BonePosePrint)
-    bpy.utils.unregister_class(O_BonePoseMoveToActive)
-    bpy.utils.unregister_class(O_BonePoseRotateToActive)
-    bpy.utils.unregister_class(O_BonePoseXYZRotateToActive)
-    bpy.utils.unregister_class(O_BonePoseXYZResizeToActive)
-    bpy.utils.unregister_class(O_BonePoseUnlockAll)
-    bpy.utils.unregister_class(O_BonePoseRemoveAllConstraints)
-    bpy.utils.unregister_class(P_BonePose)
+    for cls in reversed(classes):
+        bpy.utils.unregister_class(cls)

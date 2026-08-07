@@ -59,6 +59,7 @@ class DATA_PT_shape_key_tools(bpy.types.Panel):
         col.operator(O_ShapeKeysSelectAffectedVertices.bl_idname, text=O_ShapeKeysSelectAffectedVertices.bl_label, icon="VERTEXSEL")
         col.operator(O_ShapeKeysClean.bl_idname, text=O_ShapeKeysClean.bl_label, icon="BRUSH_DATA")
         col.operator(O_ShapeKeysTransfer.bl_idname, text=O_ShapeKeysTransfer.bl_label, icon="SHAPEKEY_DATA")
+        col.operator(O_ShapeKeysResetToZero.bl_idname, text=O_ShapeKeysResetToZero.bl_label, icon="IPO_CONSTANT")
 
         row = col.row(align=True)
         row.prop(context.scene, "sk_source_mesh", text = "", icon="MESH_DATA")
@@ -1051,6 +1052,48 @@ class O_ShapeKeysTransfer(bpy.types.Operator):
         self.report({'INFO'}, f"已传递 {transferred} 个形态键: {source_obj.name} → {target_obj.name}")
         return {'FINISHED'}
 
+class O_ShapeKeysResetToZero(bpy.types.Operator):
+    bl_idname = "xqfa.shape_keys_reset_to_zero"
+    bl_label = "形态键归零"
+    bl_description = "将所有选择物体的所有形态键值归零"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        selected_objs = [obj for obj in context.selected_objects if obj.type == 'MESH']
+
+        if not selected_objs:
+            self.report({'ERROR'}, "请选择至少一个网格物体")
+            return {'CANCELLED'}
+
+        total_reset = 0
+        processed = 0
+
+        for obj in selected_objs:
+            if not obj.data.shape_keys:
+                continue
+
+            key_blocks = obj.data.shape_keys.key_blocks
+            obj_reset = 0
+            for sk in key_blocks:
+                if sk == sk.relative_key:
+                    continue
+                if sk.value != 0.0:
+                    sk.value = 0.0
+                    obj_reset += 1
+
+            if obj_reset > 0:
+                total_reset += obj_reset
+                processed += 1
+                print(f"形态键归零 [{obj.name}]: 已归零 {obj_reset} 个形态键")
+
+        if total_reset == 0:
+            self.report({'INFO'}, "所有形态键值已为0，无需处理")
+        else:
+            self.report({'INFO'}, f"已处理 {processed} 个物体，归零 {total_reset} 个形态键")
+
+        return {'FINISHED'}
+
+
 class XQFA_OT_ApplyAsShapekey(bpy.types.Operator):
     bl_idname = "xqfa.apply_as_shapekey"
     bl_label = "应用为形态键"
@@ -1129,6 +1172,7 @@ classes = (
     O_ShapeKeysSelectAffectedVertices,
     O_ShapeKeysClean,
     O_ShapeKeysTransfer,
+    O_ShapeKeysResetToZero,
     XQFA_OT_ApplyAsShapekey,
 )
 

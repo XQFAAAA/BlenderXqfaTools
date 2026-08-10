@@ -215,22 +215,50 @@ class XQFA_OT_viewer_to_material(bpy.types.Operator):
         # 打包后再设色彩空间，避免像素数据被重新解释
         new_img.colorspace_settings.name = 'sRGB' if self.color_space == 'SRGB' else 'Non-Color'
 
-        # 5. 添加到当前活动材质
-        mat = context.active_object.active_material
-        if not mat.use_nodes:
-            mat.use_nodes = True
-        mat_nodes = mat.node_tree.nodes
-        tex_node = mat_nodes.new('ShaderNodeTexImage')
-        tex_node.image = new_img
-        # 将节点放置在当前材质编辑器视图的中心
-        if context.region:
-            region = context.region
-            center_x, center_y = region.view2d.region_to_view(
-                region.width / 2, region.height / 2)
-            tex_node.location = (center_x, center_y)
-        else:
-            tex_node.location = (0, 0)
-        # tex_node.label = "Viewer Result"
+        # 5. 延迟添加节点：等对话框关闭后 cursor_location 才会更新
+        img_name = new_img.name
+
+        def _deferred_add_node():
+            for area in bpy.context.screen.areas:
+                if area.type != 'NODE_EDITOR':
+                    continue
+                node_space = None
+                node_region = None
+                for space in area.spaces:
+                    if space.type == 'NODE_EDITOR':
+                        node_space = space
+                for region in area.regions:
+                    if region.type == 'WINDOW':
+                        node_region = region
+                if not node_space or not node_region:
+                    continue
+
+                # 优先添加到当前正在编辑的节点树（支持节点组内）
+                edit_tree = getattr(node_space, 'edit_tree', None) or getattr(node_space, 'node_tree', None)
+                if edit_tree is None:
+                    cur_mat = bpy.context.active_object.active_material
+                    if not cur_mat or not cur_mat.use_nodes:
+                        return None
+                    edit_tree = cur_mat.node_tree
+
+                cur_mat_nodes = edit_tree.nodes
+                tex_node = cur_mat_nodes.new('ShaderNodeTexImage')
+                tex_node.image = bpy.data.images.get(img_name)
+                tex_node.location = node_space.cursor_location
+
+                for n in cur_mat_nodes:
+                    n.select = False
+                tex_node.select = True
+                cur_mat_nodes.active = tex_node
+
+                with bpy.context.temp_override(
+                    area=area, region=node_region, space_data=node_space
+                ):
+                    bpy.ops.node.translate_attach('INVOKE_DEFAULT')
+                return None
+            return None  # 取消注册计时器
+
+        bpy.app.timers.register(_deferred_add_node, first_interval=0.05)
 
         cs_label = "sRGB" if self.color_space == 'SRGB' else "Non-Color"
         self.report({'INFO'}, f"已创建打包图片 '{new_img.name}' ({new_img.size[0]}x{new_img.size[1]}, {cs_label})")
@@ -348,11 +376,15 @@ class XQFA_OT_create_packed_image(bpy.types.Operator):
                 if not node_space or not node_region:
                     continue
 
-                cur_mat = bpy.context.active_object.active_material
-                if not cur_mat or not cur_mat.use_nodes:
-                    return None
+                # 优先添加到当前正在编辑的节点树（支持节点组内）
+                edit_tree = getattr(node_space, 'edit_tree', None) or getattr(node_space, 'node_tree', None)
+                if edit_tree is None:
+                    cur_mat = bpy.context.active_object.active_material
+                    if not cur_mat or not cur_mat.use_nodes:
+                        return None
+                    edit_tree = cur_mat.node_tree
 
-                cur_mat_nodes = cur_mat.node_tree.nodes
+                cur_mat_nodes = edit_tree.nodes
                 tex_node = cur_mat_nodes.new('ShaderNodeTexImage')
                 tex_node.image = bpy.data.images.get(img_name)
                 tex_node.location = node_space.cursor_location
@@ -374,6 +406,117 @@ class XQFA_OT_create_packed_image(bpy.types.Operator):
         color_hex = "#{:02x}{:02x}{:02x}".format(
             int(r * 255), int(g * 255), int(b * 255))
         self.report({'INFO'}, f"已创建打包图像 '{name}' ({w}x{h}, 颜色: {color_hex})")
+        return {'FINISHED'}
+
+
+class XQFA_OT_duplicate_packed_image(bpy.types.Operator):
+    """复制活动图像节点的图像为打包图像"""
+    bl_idname = "xqfa.duplicate_packed_image"
+    bl_label = "复制为打包图像"
+    bl_description = "复制活动图像节点的分辨率与像素数据，创建一张打包到 .blend 的新图像并添加到当前材质"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        node = context.active_node
+        return (node is not None and
+                node.type == 'TEX_IMAGE' and
+                node.image is not None and
+                context.active_object is not None and
+                context.active_object.active_material is not None)
+
+    def execute(self, context):
+        # 1. 检查活动图像节点
+        node = context.active_node
+        if not node or node.type != 'TEX_IMAGE' or not node.image:
+            self.report({'ERROR'}, "请先选择一个图像纹理节点")
+            return {'CANCELLED'}
+        src_img = node.image
+        w, h = src_img.size
+        if w <= 0 or h <= 0:
+            self.report({'ERROR'}, "源图像无效")
+            return {'CANCELLED'}
+
+        # 2. 检查活动材质
+        mat = context.active_object.active_material
+        if not mat:
+            self.report({'ERROR'}, "当前物体没有活动材质")
+            return {'CANCELLED'}
+        if not mat.use_nodes:
+            mat.use_nodes = True
+
+        # 3. 自动去重图像名称
+        name = src_img.name
+        base_name = name
+        idx = 1
+        while bpy.data.images.get(name):
+            name = f"{base_name}.{idx:03d}"
+            idx += 1
+
+        # 4. 创建新图像并复制像素数据（统一转为4通道）
+        new_img = bpy.data.images.new(name=name, width=w, height=h, alpha=True)
+        pixels = np.empty(w * h * src_img.channels, dtype=np.float32)
+        src_img.pixels.foreach_get(pixels)
+        data = pixels.reshape(h, w, src_img.channels)
+        rgba = np.zeros((h, w, 4), dtype=np.float32)
+        rgba[:, :, :3] = data[:, :, :3]
+        if src_img.channels >= 4:
+            rgba[:, :, 3] = data[:, :, 3]
+        else:
+            rgba[:, :, 3] = 1.0
+        new_img.pixels.foreach_set(rgba.ravel())
+
+        # 5. 打包后复制色彩空间，避免像素数据被重新解释
+        new_img.alpha_mode = 'CHANNEL_PACKED'
+        new_img.pack()
+        new_img.colorspace_settings.name = src_img.colorspace_settings.name
+
+        # 6. 延迟添加节点：等对话框关闭后 cursor_location 才会更新
+        img_name = name
+
+        def _deferred_add_node():
+            for area in bpy.context.screen.areas:
+                if area.type != 'NODE_EDITOR':
+                    continue
+                node_space = None
+                node_region = None
+                for space in area.spaces:
+                    if space.type == 'NODE_EDITOR':
+                        node_space = space
+                for region in area.regions:
+                    if region.type == 'WINDOW':
+                        node_region = region
+                if not node_space or not node_region:
+                    continue
+
+                # 优先添加到当前正在编辑的节点树（支持节点组内）
+                edit_tree = getattr(node_space, 'edit_tree', None) or getattr(node_space, 'node_tree', None)
+                if edit_tree is None:
+                    cur_mat = bpy.context.active_object.active_material
+                    if not cur_mat or not cur_mat.use_nodes:
+                        return None
+                    edit_tree = cur_mat.node_tree
+
+                cur_mat_nodes = edit_tree.nodes
+                tex_node = cur_mat_nodes.new('ShaderNodeTexImage')
+                tex_node.image = bpy.data.images.get(img_name)
+                tex_node.location = node_space.cursor_location
+
+                for n in cur_mat_nodes:
+                    n.select = False
+                tex_node.select = True
+                cur_mat_nodes.active = tex_node
+
+                with bpy.context.temp_override(
+                    area=area, region=node_region, space_data=node_space
+                ):
+                    bpy.ops.node.translate_attach('INVOKE_DEFAULT')
+                return None
+            return None  # 取消注册计时器
+
+        bpy.app.timers.register(_deferred_add_node, first_interval=0.05)
+
+        self.report({'INFO'}, f"已复制图像 '{src_img.name}' 为打包图像 '{name}' ({w}x{h})")
         return {'FINISHED'}
 
 
@@ -626,21 +769,80 @@ class XQFA_OT_extract_id_masks(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class XQFA_OT_external_edit_image(bpy.types.Operator):
+    """在图像节点上右键使用外部编辑器打开图片"""
+    bl_idname = "xqfa.external_edit_image"
+    bl_label = "外部编辑图像"
+    bl_description = "使用外部图像编辑器打开当前图像节点中的图片"
+    bl_options = {'REGISTER'}
+
+    @classmethod
+    def poll(cls, context):
+        node = context.active_node
+        return (node is not None and
+                node.type == 'TEX_IMAGE' and
+                node.image is not None)
+
+    def execute(self, context):
+        node = context.active_node
+        img = node.image
+
+        # 查找图像编辑器区域以提供正确的上下文
+        image_area = None
+        image_space = None
+        image_region = None
+        for area in context.screen.areas:
+            if area.type == 'IMAGE_EDITOR':
+                image_area = area
+                for space in area.spaces:
+                    if space.type == 'IMAGE_EDITOR':
+                        image_space = space
+                for region in area.regions:
+                    if region.type == 'WINDOW':
+                        image_region = region
+                break
+
+        if not image_area:
+            self.report({'ERROR'}, "请先打开一个图像编辑器窗口")
+            return {'CANCELLED'}
+
+        image_space.image = img
+        # 解析为绝对路径并传递，避免 "Image path not set" 错误
+        filepath = bpy.path.abspath(img.filepath) if img.filepath else ""
+        with context.temp_override(area=image_area, region=image_region, space_data=image_space):
+            if filepath:
+                bpy.ops.image.external_edit(filepath=filepath)
+            else:
+                bpy.ops.image.external_edit()
+        self.report({'INFO'}, f"已在外部编辑器中打开 '{img.name}'")
+        return {'FINISHED'}
+
+
+def draw_external_edit_menu(self, context):
+    """在节点编辑器右键菜单中添加外部编辑选项"""
+    node = context.active_node
+    if node and node.type == 'TEX_IMAGE' and node.image:
+        layout = self.layout
+        layout.separator()
+        layout.operator(XQFA_OT_external_edit_image.bl_idname, text="外部编辑", icon='IMAGE_DATA')
+
+
 class XQFA_PT_material_tools(bpy.types.Panel):
     """在节点编辑器侧边栏中添加面板"""
     bl_label = "XQFA 材质工具"
     bl_space_type = 'NODE_EDITOR'
     bl_region_type = 'UI'
     bl_category = "XQFA"
-    
+
     def draw(self, context):
         layout = self.layout
-        
+
         col = layout.column()
         col.operator(XQFA_OT_detect_normal_format.bl_idname, icon='NODE_SEL')
         col.operator(XQFA_OT_ensure_material.bl_idname, icon='MATERIAL_DATA')
         col.operator(XQFA_OT_viewer_to_material.bl_idname, icon='IMAGE_DATA')
         col.operator(XQFA_OT_create_packed_image.bl_idname, icon='ADD')
+        col.operator(XQFA_OT_duplicate_packed_image.bl_idname, icon='COPYDOWN')
         col.operator(XQFA_OT_extract_id_masks.bl_idname, icon='FILTER')
 
 classes = (
@@ -648,16 +850,20 @@ classes = (
     XQFA_OT_ensure_material,
     XQFA_OT_viewer_to_material,
     XQFA_OT_create_packed_image,
+    XQFA_OT_duplicate_packed_image,
     XQFA_OT_extract_id_masks,
+    XQFA_OT_external_edit_image,
     XQFA_PT_material_tools,
 )
 
 def register():
     for cls in classes:
         bpy.utils.register_class(cls)
+    bpy.types.NODE_MT_context_menu.append(draw_external_edit_menu)
 
 
 def unregister():
+    bpy.types.NODE_MT_context_menu.remove(draw_external_edit_menu)
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
 

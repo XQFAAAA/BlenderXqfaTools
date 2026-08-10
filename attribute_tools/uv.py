@@ -34,39 +34,72 @@ class DATA_PT_uv_map_tools(bpy.types.Panel):
 
 class O_AddRenameUVMaps(bpy.types.Operator):
     bl_idname = "xqfa.uv_map_add_rename"
-    bl_label = "覆盖并重命名"
-    bl_description = "添加UV贴图并重命名为TEXCOORD.xy格式"
-    
+    bl_label = "添加UV"
+    bl_description = "在顶部添加TEXCOORD.xy格式的UV贴图"
+
+    @staticmethod
+    def _prepend_uv_layers(uv_layers, count):
+        """在UV贴图列表顶部添加count个新层，原有层顺序不变向下顺延"""
+        # 快照原有层（名称、渲染状态、UV数据）
+        original = [(l.name, l.active_render, [v.uv.copy() for v in l.data]) for l in uv_layers]
+        active_name = uv_layers.active.name if uv_layers.active else None
+        # 快照当前活动UV的数据，用于填充新增层（新增层内容与活动UV相同）
+        active_data = [v.uv.copy() for v in uv_layers.active.data] if uv_layers.active else None
+
+        # 1. 删除所有原有层（使列表清空，后续新层自然排在最前）
+        for l in list(uv_layers):
+            uv_layers.remove(l)
+
+        # 2. 创建新层并复制活动UV的数据
+        for i in range(count):
+            name = f"TEXCOORD{i}.xy" if i > 0 else "TEXCOORD.xy"
+            new_layer = uv_layers.new(name=name)
+            if new_layer is None:
+                raise RuntimeError("创建UV贴图失败：可能已达数量上限或网格没有面")
+            if active_data is not None:
+                for li, uv in enumerate(active_data):
+                    new_layer.data[li].uv = uv
+
+        # 3. 按原顺序重建原有层
+        for src_name, src_render, uv_list in original:
+            copied = uv_layers.new(name=src_name)
+            if copied is None:
+                raise RuntimeError("创建UV贴图失败：可能已达数量上限或网格没有面")
+            for li, uv in enumerate(uv_list):
+                copied.data[li].uv = uv
+            copied.active_render = src_render
+
+        # 4. 恢复活动层
+        if active_name and active_name in uv_layers:
+            uv_layers.active = uv_layers[active_name]
+
     def execute(self, context):
         scene = context.scene
         target_index = scene.uv_map_target_index
-        
+        count = target_index + 1
 
         processed_objects = 0
         added_maps = 0
-        renamed_maps = 0
-        
+
         for obj in context.selected_objects:
             if obj.type != 'MESH':
                 continue
-                
+
             processed_objects += 1
             uv_layers = obj.data.uv_layers
-            current_count = len(uv_layers)
-            
-            # 添加不足的数量
-            if current_count < target_index + 1:
-                for i in range(current_count, target_index + 1):
-                    uv_layers.new(name=f"TEXCOORD{i}.xy" if i > 0 else "TEXCOORD.xy")
-                    added_maps += 1
-            
-            # 重命名所有UV贴图
-            for i, uv_layer in enumerate(uv_layers):
-                new_name = f"{i}"
-                uv_layer.name = new_name
-            for i, uv_layer in enumerate(uv_layers):
-                new_name = f"TEXCOORD{i}.xy" if i > 0 else "TEXCOORD.xy"
-                uv_layer.name = new_name
+            # Blender 每个网格最多 8 个 UV 贴图（MAX_MTFACE 限制）
+            if len(uv_layers) + count > 8:
+                self.report({'WARNING'}, f"物体 {obj.name} 添加UV失败：Blender 每网格最多 8 个UV贴图（当前 {len(uv_layers)} 个，还需 {count} 个）")
+                continue
+            if len(obj.data.loops) == 0:
+                self.report({'WARNING'}, f"物体 {obj.name} 添加UV失败：网格没有面")
+                continue
+            try:
+                self._prepend_uv_layers(uv_layers, count)
+            except RuntimeError as e:
+                self.report({'WARNING'}, f"物体 {obj.name} 添加UV失败：{e}")
+                continue
+            added_maps += count
 
         # 强制刷新所有区域
         for area in context.screen.areas:

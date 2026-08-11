@@ -2,9 +2,6 @@
 import bpy
 import math
 from mathutils import Euler, Matrix, Vector, Quaternion
-import os
-import csv
-from bpy_extras.io_utils import ImportHelper
 
 ########################## Divider ##########################
 
@@ -405,101 +402,6 @@ class O_SwapPoseRest(bpy.types.Operator):
         self.report({'INFO'}, f"已交换{len(pose_bones)}根骨骼的姿态和静置位置")
         return {'FINISHED'}
     
-
-class O_InCSVSel(bpy.types.Operator, ImportHelper):
-    bl_idname = "xqfa.csv_bone_sel"
-    bl_label = "导入CSV并选择骨骼"
-    bl_description = ""
-    filename_ext = ".csv"
-    filter_glob: bpy.props.StringProperty(
-        default="*.csv",
-        options={'HIDDEN'},
-    )
-
-    def execute(self, context):
-        csv_file = self.filepath
-        bone_sel_col = context.scene.bone_sel_col  # CSV从0开始数列
-        bone_sel = []
-
-        if not csv_file or not os.path.exists(csv_file):
-            self.report({'ERROR'}, "请选择有效的CSV文件")
-            return {'CANCELLED'}
-        
-        # 尝试的编码顺序
-        encodings = ['utf-8', 'gbk', 'utf-16']
-        
-        for encoding in encodings:
-            try:
-                # 读取CSV文件
-                with open(csv_file, 'r', newline='', encoding=encoding) as file:
-                    reader = csv.reader(file)
-                    # 跳过标题行，从第二行开始读取数据
-                    next(reader)  # 跳过第一行
-                    
-                    for row in reader:
-                        if len(row) <= bone_sel_col:
-                            continue  # 跳过列数不足的行
-                        value = str(row[bone_sel_col]).strip()
-                        if not value or value == "None":
-                            continue
-                        bone_sel.append(value)
-                
-                # 选择骨骼
-                bpy.ops.pose.select_all(action='DESELECT')
-                selected_count = 0
-                for bone_name in bone_sel:
-                    # 使用更可靠的选择方式
-                    if bone_name in context.active_object.pose.bones:
-                        _select_pose_bone(context.active_object.pose.bones[bone_name])
-                        selected_count += 1
-
-                self.report({'INFO'}, f"已选择 {selected_count}/{len(bone_sel)} 个骨骼")
-                return {'FINISHED'}
-            
-            except UnicodeDecodeError:
-                continue
-            except Exception as e:
-                self.report({'ERROR'}, f"导入CSV文件时出现错误: {e}")
-                return {'CANCELLED'}
-        
-
-class O_BonePosePrint(bpy.types.Operator):
-    bl_idname = "xqfa.pose_print"
-    bl_label = "复制选中骨骼名称"
-    bl_description = "打印并复制选择的骨骼名称到剪贴板"
-    
-    @classmethod
-    def poll(cls, context):
-        """检查是否满足操作条件"""
-        # 必须有一个选中的物体，且是骨架类型，并且当前处于姿态模式
-        return (context.object and 
-                context.object.type == 'ARMATURE' and 
-                context.object.mode == 'POSE' and
-                context.selected_pose_bones)
-    
-    def execute(self, context):
-        selected_bones = context.selected_pose_bones
-        if not selected_bones:
-            self.report({'WARNING'}, "没有选择任何骨骼")
-            return {"CANCELLED"}
-        
-        # 收集所有骨骼名称
-        bone_names = [bone.name for bone in selected_bones]
-        output_text = "\n".join(bone_names)
-        
-        # 打印到控制台
-        print("选择的骨骼名称:")
-        print(output_text)
-        
-        # 复制到Blender剪贴板
-        try:
-            context.window_manager.clipboard = output_text
-            self.report({'INFO'}, f"已复制 {len(bone_names)} 个骨骼名称到剪贴板")
-        except Exception as e:
-            self.report({'ERROR'}, f"复制到剪贴板失败: {str(e)}")
-            return {"CANCELLED"}
-        
-        return {"FINISHED"}
 
 class O_BonePoseMoveToActive(bpy.types.Operator):
     '''
@@ -1179,11 +1081,6 @@ class P_BonePose(bpy.types.Panel):
             col.operator(O_BonePoseApply.bl_idname, text=O_BonePoseApply.bl_label)
             col.operator(O_SwapPoseRest.bl_idname, text=O_SwapPoseRest.bl_label)
             row = col.row(align=True)
-            row.prop(context.scene, "bone_sel_col", text="csv索引")
-            row.operator(O_InCSVSel.bl_idname, text=O_InCSVSel.bl_label)
-            row = col.row(align=True)
-            row.operator(O_BonePosePrint.bl_idname, text=O_BonePosePrint.bl_label, icon='COPYDOWN')
-            row = col.row(align=True)
             row.operator(O_BonePoseUnlockAll.bl_idname, text=O_BonePoseUnlockAll.bl_label, icon='UNLOCKED')
             row.operator(O_BonePoseRemoveAllConstraints.bl_idname, text=O_BonePoseRemoveAllConstraints.bl_label, icon='X')
 
@@ -1332,8 +1229,6 @@ classes = (
     O_BonePoseAutoStraighten,
     O_BonePoseApply,
     O_SwapPoseRest,
-    O_InCSVSel,
-    O_BonePosePrint,
     O_BonePoseMoveToActive,
     O_BonePoseRotateToActive,
     O_BonePoseXYZRotateToActive,
@@ -1347,16 +1242,10 @@ classes = (
 def register():
     for cls in classes:
         bpy.utils.register_class(cls)
-    bpy.types.Scene.bone_sel_col = bpy.props.IntProperty(
-        name="骨骼列",
-        default=0,
-        min=0,
-    )
     bpy.types.Scene.bone_pose_world_props = bpy.props.PointerProperty(type=PG_BonePoseWorldProps)
 
 
 def unregister():
-    del bpy.types.Scene.bone_sel_col
     del bpy.types.Scene.bone_pose_world_props
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)

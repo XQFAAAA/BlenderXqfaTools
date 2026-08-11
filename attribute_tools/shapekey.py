@@ -2,8 +2,12 @@
 import bpy
 import numpy as np
 import time
+import os
+import csv
+from dataclasses import dataclass
 from typing import Dict, Tuple, Set, List, Optional
 from bpy.props import IntProperty, FloatProperty, PointerProperty
+from bpy_extras.io_utils import ImportHelper
 
 class XQFA_Utils:
     @staticmethod
@@ -13,6 +17,26 @@ class XQFA_Utils:
     @staticmethod
     def is_armature(scene, obj):
         return obj.type == "ARMATURE"
+
+
+def _read_csv_file(filepath):
+    """读取CSV文件，返回 (csv_data, error_message)"""
+    if not filepath or not os.path.exists(filepath):
+        return None, "请选择有效的CSV文件"
+
+    encodings = ['utf-8', 'gbk', 'utf-16']
+    for encoding in encodings:
+        try:
+            with open(filepath, 'r', newline='', encoding=encoding) as file:
+                reader = csv.reader(file)
+                csv_data = list(reader)
+            return csv_data, None
+        except UnicodeDecodeError:
+            continue
+        except Exception as e:
+            return None, f"导入CSV文件时出现错误: {e}"
+
+    return None, "无法解码CSV文件，请尝试转换为UTF-8编码"
 
 class XqfaShapeKeyPairItem(bpy.types.PropertyGroup):
     left_name: bpy.props.StringProperty(name="左")
@@ -60,7 +84,8 @@ class DATA_PT_shape_key_tools(bpy.types.Panel):
         col.operator(O_ShapeKeysClean.bl_idname, text=O_ShapeKeysClean.bl_label, icon="BRUSH_DATA")
         col.operator(O_ShapeKeysTransfer.bl_idname, text=O_ShapeKeysTransfer.bl_label, icon="SHAPEKEY_DATA")
         col.operator(O_ShapeKeysResetToZero.bl_idname, text=O_ShapeKeysResetToZero.bl_label, icon="IPO_CONSTANT")
-
+        col.operator(O_ShapeKeysSplitLR.bl_idname, text=O_ShapeKeysSplitLR.bl_label, icon="MOD_MIRROR")
+        
         row = col.row(align=True)
         row.prop(context.scene, "sk_source_mesh", text = "", icon="MESH_DATA")
         if context.scene.sk_source_mesh:
@@ -76,6 +101,16 @@ class DATA_PT_shape_key_tools(bpy.types.Panel):
             else:
                 row.label(text="错误: 物体没有骨架修改器", icon='ERROR')
         row.operator(XQFA_OT_ApplyAsShapekey.bl_idname, icon="SHAPEKEY_DATA")
+
+
+        box = layout.box()
+        box.operator(O_ShapeKeysCopyNames.bl_idname, text=O_ShapeKeysCopyNames.bl_label, icon="COPYDOWN")
+        col = box.column(align=True)
+        row = col.row(align=True)
+        row.prop(context.scene, "sk_current_column")
+        row.prop(context.scene, "sk_change_column")
+        col.operator(O_ShapeKeysRenameByCSV.bl_idname, icon="PLAY")
+
 
         self._draw_mappings(context)
 
@@ -124,11 +159,25 @@ class DATA_PT_shape_key_tools(bpy.types.Panel):
                 )
 
 
+@dataclass
+class ShapeKeyMatchResult:
+    """形态键匹配重命名的结果"""
+    pairs: List[Tuple[str, str, str]]  # (B原始名称, 重命名后名称, 相似度字符串)
+    total_a: int
+    total_b: int
+
+    @property
+    def renamed_count(self) -> int:
+        """实际发生重命名的数量（重命名后名称 != 原始名称）"""
+        return sum(1 for left, right, _ in self.pairs if left != right)
+
+
 class O_ShapeKeysMatchRename(bpy.types.Operator):
     bl_idname = "xqfa.shape_keys_match_rename"
     bl_label = "匹配重命名"
     bl_description = ("基于顶点平均位置匹配重命名活动物体的形态键（需选择2个网格物体）\n"
                      "用于按参考模型的形态键名称重命名当前模型的形态键")
+    bl_options = {'REGISTER', 'UNDO'}
 
     similarity_threshold: bpy.props.FloatProperty(
         name="相似度",
@@ -160,7 +209,7 @@ class O_ShapeKeysMatchRename(bpy.types.Operator):
         try:
             obj_a, obj_b = self._validate_input(context)
 
-            result = self._rename_matching_shape_keys(obj_a, obj_b)
+            result = self._match_and_rename(obj_a, obj_b)
 
             self._print_detailed_results(obj_a, obj_b, result)
 
@@ -169,8 +218,8 @@ class O_ShapeKeysMatchRename(bpy.types.Operator):
             elapsed_time = time.time() - start_time
             time_msg = f"总耗时: {elapsed_time:.2f}秒"
 
-            if result['renamed_count'] > 0:
-                self.report({'INFO'}, f"成功匹配重命名 {result['renamed_count']} 个形态键 ({time_msg})")
+            if result.renamed_count > 0:
+                self.report({'INFO'}, f"成功匹配重命名 {result.renamed_count} 个形态键 ({time_msg})")
             else:
                 self.report({'WARNING'}, f"没有找到匹配的形态键 ({time_msg})")
 
@@ -181,84 +230,145 @@ class O_ShapeKeysMatchRename(bpy.types.Operator):
             self.report({'ERROR'}, f"{str(e)} (耗时: {elapsed_time:.2f}秒)")
             return {'CANCELLED'}
 
-    def _store_mapping(self, context, obj_a, obj_b, result):
-        scene = context.scene
-        if not hasattr(scene, 'xqfa_shape_key_mappings'):
-            return
-        mappings = scene.xqfa_shape_key_mappings
-        item = mappings.add()
-        item.label = self.mapping_name if self.mapping_name else f"映射 {len(mappings)}"
-        item.expanded = False
-        pair_items = result.get('pair_items', [])
-        for left_name, right_name, similarity in pair_items:
-            p = item.pairs.add()
-            p.left_name = left_name
-            p.right_name = right_name
-            p.similarity = similarity
-    
+    # ---------- 输入验证 ----------
+
     def _validate_input(self, context: bpy.types.Context) -> Tuple[bpy.types.Object, bpy.types.Object]:
-        """验证输入并返回两个有形态键的网格物体"""
+        """验证输入并返回 (参考物体A, 活动物体B)"""
         selected_objs = context.selected_objects
         active_obj = context.active_object
-        
+
         if len(selected_objs) != 2:
             raise ValueError("请选择2个网格物体")
-            
+
         if active_obj not in selected_objs:
             raise ValueError("活动物体必须是选中的物体之一")
-            
+
         obj_b = active_obj
         obj_a = next(obj for obj in selected_objs if obj != active_obj)
-        
+
         if obj_a.type != 'MESH' or obj_b.type != 'MESH':
             raise ValueError("两个物体都必须是网格类型")
-            
+
         if not obj_a.data.shape_keys or not obj_b.data.shape_keys:
             raise ValueError("两个物体都必须有形态键")
-            
+
         return obj_a, obj_b
-    
+
+    # ---------- 特征提取 ----------
+
     def _get_shape_key_centers(self, obj: bpy.types.Object) -> Dict[str, np.ndarray]:
-        """获取每个形态键的顶点平均位置"""
-        centers = {}
+        """获取每个形态键位移顶点的平均全局位置（仅统计与基础形态键有差异的顶点）"""
         mesh = obj.data
-        shape_keys = mesh.shape_keys.key_blocks
-        
-        # 获取基础网格顶点坐标
-        base_verts = np.zeros(len(mesh.vertices) * 3)
-        mesh.vertices.foreach_get('co', base_verts)
+        key_blocks = mesh.shape_keys.key_blocks
+        num_verts = len(mesh.vertices)
+
+        # 基础形态键顶点坐标（绝对坐标；foreach_get 需要一维连续数组，读取后再整形）
+        base_verts = np.empty(num_verts * 3, dtype=np.float64)
+        key_blocks[0].data.foreach_get('co', base_verts)
         base_verts = base_verts.reshape(-1, 3)
-        
-        for sk in shape_keys:
+
+        # 物体世界变换矩阵（预计算）
+        matrix = np.array(obj.matrix_world)
+        rot = matrix[:3, :3].T
+        trans = matrix[:3, 3]
+
+        centers = {}
+        for sk in key_blocks:
             if sk == sk.relative_key:  # 跳过基础形态键
                 continue
-                
-            # 获取形态键的相对顶点坐标
-            sk_verts = np.zeros(len(mesh.vertices) * 3)
+
+            sk_verts = np.empty(num_verts * 3, dtype=np.float64)
             sk.data.foreach_get('co', sk_verts)
             sk_verts = sk_verts.reshape(-1, 3)
-            
-            # 计算绝对顶点位置
-            abs_verts = base_verts + sk_verts
-            
-            # 转换为全局坐标
-            matrix = np.array(obj.matrix_world)
-            global_verts = np.dot(abs_verts, matrix[:3, :3].T) + matrix[:3, 3]
-            
-            # 计算平均位置
+
+            # 位移量 = 相对基础形态键的坐标差（sk.data 存储绝对坐标，不能直接当作位移）
+            displaced = np.linalg.norm(sk_verts - base_verts, axis=1) > 0.0
+            if not np.any(displaced):
+                # 无位移顶点，跳过
+                continue
+
+            # 位移顶点的绝对位置转世界坐标后取平均
+            global_verts = np.dot(sk_verts[displaced], rot) + trans
             centers[sk.name] = np.mean(global_verts, axis=0)
-        
+
         return centers
-    
-    def _calculate_similarity(self, pos_a: np.ndarray, pos_b: np.ndarray) -> float:
-        """计算两个位置之间的相似度（基于距离）"""
-        distance = np.linalg.norm(pos_a - pos_b)
-        return 1.0 / (1.0 + distance)
-    
-    def _rename_matching_shape_keys(self,
-                                  obj_a: bpy.types.Object,
-                                  obj_b: bpy.types.Object) -> Dict[str, any]:
-        """匹配并重命名形态键"""
+
+    # ---------- 匹配 ----------
+
+    def _compute_match_lookup(self,
+                              centers_a: Dict[str, np.ndarray],
+                              centers_b: Dict[str, np.ndarray]) -> Dict[str, Tuple[Optional[str], float]]:
+        """贪心匹配：为 B 的每个形态键寻找相似度最高且未被占用的 A 形态键"""
+        names_a = list(centers_a.keys())
+        names_b = list(centers_b.keys())
+
+        if not names_a or not names_b:
+            raise Exception("物体没有可用的形态键（只有基础形态键）")
+
+        mat_a = np.stack([centers_a[n] for n in names_a])
+        mat_b = np.stack([centers_b[n] for n in names_b])
+
+        # 距离矩阵 (N_a, N_b)，相似度 = 1 / (1 + distance)
+        distances = np.linalg.norm(mat_a[:, None, :] - mat_b[None, :, :], axis=2)
+        similarity = 1.0 / (1.0 + distances)
+
+        match_lookup: Dict[str, Tuple[Optional[str], float]] = {}
+        matched_a: Set[str] = set()
+
+        for j, b_name in enumerate(names_b):
+            # 按相似度从高到低寻找未占用的 A 形态键
+            best_a = None
+            best_sim = 0.0
+            for i in np.argsort(-similarity[:, j]):
+                a_name = names_a[i]
+                if a_name in matched_a:
+                    continue
+                sim = float(similarity[i, j])
+                if sim >= self.similarity_threshold:
+                    best_a, best_sim = a_name, sim
+                    break
+
+            if best_a:
+                matched_a.add(best_a)
+                match_lookup[b_name] = (best_a, best_sim)
+            else:
+                match_lookup[b_name] = (None, 0.0)
+
+        return match_lookup
+
+    # ---------- 重命名 ----------
+
+    def _apply_renames(self,
+                       key_blocks_b,
+                       match_lookup: Dict[str, Tuple[Optional[str], float]]) -> int:
+        """两遍法重命名形态键，避免目标名称与现有形态键同名时 Blender 自动追加 .001 后缀"""
+        rename_map = [
+            (orig_name, a_name)
+            for orig_name, (a_name, _) in match_lookup.items()
+            if a_name and a_name != orig_name
+        ]
+        if not rename_map:
+            return 0
+
+        # 第一遍：全部改名为唯一临时名称（持有 KeyBlock 引用，避免查找失败）
+        renamed_blocks = []
+        for i, (orig_name, a_name) in enumerate(rename_map):
+            sk = key_blocks_b[orig_name]
+            sk.name = f"__xqfa_tmp_{i:03d}"
+            renamed_blocks.append((sk, a_name))
+
+        # 第二遍：临时名称改为最终名称
+        for sk, a_name in renamed_blocks:
+            sk.name = a_name
+
+        return len(rename_map)
+
+    # ---------- 主流程 ----------
+
+    def _match_and_rename(self,
+                          obj_a: bpy.types.Object,
+                          obj_b: bpy.types.Object) -> ShapeKeyMatchResult:
+        """匹配两个物体的形态键并重命名 B 物体"""
         centers_a = self._get_shape_key_centers(obj_a)
         centers_b = self._get_shape_key_centers(obj_b)
 
@@ -267,59 +377,43 @@ class O_ShapeKeysMatchRename(bpy.types.Operator):
         if not centers_b:
             raise Exception("B物体没有可用的形态键（只有基础形态键）")
 
-        match_lookup: Dict[str, Tuple[Optional[str], str]] = {}
-        matched_a_keys: Set[str] = set()
+        match_lookup = self._compute_match_lookup(centers_a, centers_b)
 
-        for b_name, b_center in centers_b.items():
-            best_match_name = None
-            best_similarity = 0.0
+        self._apply_renames(obj_b.data.shape_keys.key_blocks, match_lookup)
 
-            for a_name, a_center in centers_a.items():
-                if a_name in matched_a_keys:
-                    continue
-
-                similarity = self._calculate_similarity(a_center, b_center)
-                if similarity > best_similarity and similarity >= self.similarity_threshold:
-                    best_similarity = similarity
-                    best_match_name = a_name
-
-            if best_match_name:
-                matched_a_keys.add(best_match_name)
-                match_lookup[b_name] = (best_match_name, f"{best_similarity:.3f}")
-            else:
-                match_lookup[b_name] = (None, "no match")
-
-        shape_keys_b = obj_b.data.shape_keys.key_blocks
-        original_sk_names = [sk.name for sk in shape_keys_b]
-
-        renamed_count = 0
         pair_items: List[Tuple[str, str, str]] = []
-
-        for orig_name in original_sk_names:
-            sk = shape_keys_b[orig_name]
-            if sk == sk.relative_key:
-                continue
-
-            match_info = match_lookup.get(orig_name, (None, "-"))
-            a_name, similarity_str = match_info
+        for orig_name, (a_name, sim) in match_lookup.items():
             if a_name:
-                shape_keys_b[orig_name].name = a_name
-                pair_items.append((orig_name, a_name, similarity_str))
-                renamed_count += 1
+                pair_items.append((orig_name, a_name, f"{sim:.3f}"))
             else:
-                pair_items.append((orig_name, orig_name, similarity_str))
+                pair_items.append((orig_name, orig_name, "no match"))
 
-        return {
-            'renamed_count': renamed_count,
-            'pair_items': pair_items,
-            'total_a': len(centers_a),
-            'total_b': len(centers_b)
-        }
-    
+        return ShapeKeyMatchResult(
+            pairs=pair_items,
+            total_a=len(centers_a),
+            total_b=len(centers_b)
+        )
+
+    # ---------- 结果记录与输出 ----------
+
+    def _store_mapping(self, context, obj_a, obj_b, result: ShapeKeyMatchResult):
+        scene = context.scene
+        if not hasattr(scene, 'xqfa_shape_key_mappings'):
+            return
+        mappings = scene.xqfa_shape_key_mappings
+        item = mappings.add()
+        item.label = self.mapping_name if self.mapping_name else f"映射 {len(mappings)}"
+        item.expanded = False
+        for left_name, right_name, similarity in result.pairs:
+            p = item.pairs.add()
+            p.left_name = left_name
+            p.right_name = right_name
+            p.similarity = similarity
+
     def _print_detailed_results(self,
-                              obj_a: bpy.types.Object,
-                              obj_b: bpy.types.Object,
-                              result: Dict[str, any]) -> None:
+                                obj_a: bpy.types.Object,
+                                obj_b: bpy.types.Object,
+                                result: ShapeKeyMatchResult) -> None:
         """打印详细结果到控制台"""
         header = f"形态键匹配与重命名详细结果 (A物体: {obj_a.name}, B物体: {obj_b.name})"
         separator = "=" * len(header)
@@ -334,7 +428,7 @@ class O_ShapeKeysMatchRename(bpy.types.Operator):
         matched = 0
         unmatched = 0
 
-        for left_name, right_name, similarity_str in result['pair_items']:
+        for left_name, right_name, similarity_str in result.pairs:
             if left_name != right_name:
                 matched += 1
                 print(f"{left_name:<30} → {right_name:<30} {similarity_str:<20}")
@@ -344,11 +438,11 @@ class O_ShapeKeysMatchRename(bpy.types.Operator):
 
         print(separator)
         print("总结:")
-        print(f"  A物体形态键数量: {result['total_a']}")
-        print(f"  B物体形态键数量: {result['total_b']}")
+        print(f"  A物体形态键数量: {result.total_a}")
+        print(f"  B物体形态键数量: {result.total_b}")
         print(f"  匹配数量: {matched}")
         print(f"  未匹配数量: {unmatched}")
-        print(f"  总重命名数量: {result['renamed_count']}")
+        print(f"  总重命名数量: {result.renamed_count}")
         print(separator)
 
 class O_ShapeKeyMappingRemove(bpy.types.Operator):
@@ -614,8 +708,9 @@ class O_ShapeKeysSortMatch(bpy.types.Operator):
         
         # 确保基础形态键在第一位
         if basis_sk != target_sks[0]:
-            target_obj.active_shape_key_index = basis_sk.index
-            for _ in range(basis_sk.index):
+            basis_idx = target_sks.find(basis_sk.name)
+            target_obj.active_shape_key_index = basis_idx
+            for _ in range(basis_idx):
                 bpy.ops.object.shape_key_move(type='UP')
         
         # 遍历源物体的形态键顺序
@@ -1094,6 +1189,203 @@ class O_ShapeKeysResetToZero(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class O_ShapeKeysSplitLR(bpy.types.Operator):
+    bl_idname = "xqfa.shape_keys_split_lr"
+    bl_label = "左右拆分"
+    bl_description = ("以活动形态键为基础，按顶点X坐标拆分成两个新形态键：\n"
+                     "x>0 的顶点位移存入 {名称}_L，x<0 的存入 {名称}_R\n"
+                     "左右判断基于基础形态键的顶点X坐标；x==0 的中心线顶点位移会同时保留在两个形态键中")
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        return obj and obj.type == 'MESH' and obj.data.shape_keys and obj.active_shape_key
+
+    def execute(self, context):
+        try:
+            obj = context.active_object
+            mesh = obj.data
+            active_sk = obj.active_shape_key
+
+            if active_sk == active_sk.relative_key:
+                self.report({'ERROR'}, "基础形态键不能拆分，请选择其他形态键")
+                return {'CANCELLED'}
+
+            total_verts = len(mesh.vertices)
+
+            # 基础形态键顶点坐标（绝对坐标；sk.data 存储绝对坐标，位移需减去基础坐标）
+            basis_coords = np.zeros(total_verts * 3)
+            active_sk.relative_key.data.foreach_get('co', basis_coords)
+            basis_coords = basis_coords.reshape(-1, 3)
+
+            # 活动形态键顶点坐标
+            sk_coords = np.zeros(total_verts * 3)
+            active_sk.data.foreach_get('co', sk_coords)
+            sk_coords = sk_coords.reshape(-1, 3)
+
+            # 位移 = 形态键坐标 - 基础坐标
+            displacement = sk_coords - basis_coords
+
+            # 按基础形态键的X坐标判断左右（用静止位置判断，避免顶点越过中线时左右颠倒）
+            xs = basis_coords[:, 0]
+            mask_left = xs > 0.0
+            mask_right = xs < 0.0
+            mask_center = xs == 0.0
+
+            if not np.any(mask_left | mask_center):
+                self.report({'ERROR'}, "没有X>0或X==0的顶点，无法创建左侧(_L)形态键")
+                return {'CANCELLED'}
+            if not np.any(mask_right | mask_center):
+                self.report({'ERROR'}, "没有X<0或X==0的顶点，无法创建右侧(_R)形态键")
+                return {'CANCELLED'}
+
+            displaced = np.linalg.norm(displacement, axis=1) > 0.0
+            left_affected = int(np.count_nonzero(displaced & mask_left))
+            right_affected = int(np.count_nonzero(displaced & mask_right))
+            center_affected = int(np.count_nonzero(displaced & mask_center))
+
+            created = []
+            key_blocks = mesh.shape_keys.key_blocks
+            active_idx = key_blocks.find(active_sk.name)
+            for offset, (suffix, mask) in enumerate(
+                (("_L", mask_left | mask_center), ("_R", mask_right | mask_center)), start=1
+            ):
+                new_sk = obj.shape_key_add(name=f"{active_sk.name}{suffix}", from_mix=False)
+                new_sk.value = 0.0  # 新建形态键默认值为1，这里归零避免改变当前显示
+                new_coords = basis_coords.copy()
+                new_coords[mask] += displacement[mask]
+                new_sk.data.foreach_set('co', new_coords.flatten())
+                new_sk.data.update()
+
+                # 新形态键默认追加在末尾，这里上移放到活动形态键下方
+                obj.active_shape_key_index = key_blocks.find(new_sk.name)
+                while key_blocks.find(new_sk.name) > active_idx + offset:
+                    bpy.ops.object.shape_key_move(type='UP')
+
+                created.append(new_sk.name)
+
+            # 开启"单独活动形态键"时，新建形态键可能导致原始活动形态键移到首位，移回原位
+            current_idx = key_blocks.find(active_sk.name)
+            if current_idx != active_idx:
+                obj.active_shape_key_index = current_idx
+                diff = current_idx - active_idx
+                if diff > 0:
+                    for _ in range(diff):
+                        bpy.ops.object.shape_key_move(type='UP')
+                else:
+                    for _ in range(-diff):
+                        bpy.ops.object.shape_key_move(type='DOWN')
+
+            self.report(
+                {'INFO'},
+                f"已创建 {created[0]} 和 {created[1]}（位移顶点: 左{left_affected}, 右{right_affected}, 中心{center_affected}）"
+            )
+            return {'FINISHED'}
+
+        except Exception as e:
+            self.report({'ERROR'}, str(e))
+            return {'CANCELLED'}
+
+
+class O_ShapeKeysCopyNames(bpy.types.Operator):
+    bl_idname = "xqfa.shape_keys_copy_names"
+    bl_label = "复制形态键名称"
+    bl_description = "复制活动物体所有形态键名称到剪贴板"
+
+    @classmethod
+    def poll(cls, context):
+        """检查是否满足操作条件"""
+        obj = context.active_object
+        return obj and obj.type == 'MESH' and obj.data.shape_keys
+
+    def execute(self, context):
+        obj = context.active_object
+        key_blocks = obj.data.shape_keys.key_blocks
+        if not key_blocks:
+            self.report({'WARNING'}, "物体没有形态键")
+            return {"CANCELLED"}
+
+        # 收集所有形态键名称
+        sk_names = [sk.name for sk in key_blocks]
+        output_text = "\n".join(sk_names)
+
+        # 打印到控制台
+        print(f"物体 {obj.name} 的形态键名称:")
+        print(output_text)
+
+        # 复制到Blender剪贴板
+        try:
+            context.window_manager.clipboard = output_text
+            self.report({'INFO'}, f"已复制 {len(sk_names)} 个形态键名称到剪贴板")
+        except Exception as e:
+            self.report({'ERROR'}, f"复制到剪贴板失败: {str(e)}")
+            return {"CANCELLED"}
+
+        return {"FINISHED"}
+
+
+class O_ShapeKeysRenameByCSV(bpy.types.Operator, ImportHelper):
+    bl_idname = "xqfa.shape_keys_rename_by_csv"
+    bl_label = "CSV重命名"
+    bl_description = "导入CSV并按对应关系重命名活动物体的形态键"
+    bl_options = {'REGISTER', 'UNDO'}
+    filename_ext = ".csv"
+    filter_glob: bpy.props.StringProperty(
+        default="*.csv",
+        options={'HIDDEN'},
+    )
+
+    def execute(self, context):
+        target_obj = context.active_object
+        if not target_obj or target_obj.type != 'MESH':
+            self.report({'ERROR'}, "请先选中一个网格物体")
+            return {'CANCELLED'}
+        if not target_obj.data.shape_keys:
+            self.report({'ERROR'}, "物体没有形态键")
+            return {'CANCELLED'}
+
+        csv_data, err = _read_csv_file(self.filepath)
+        if err:
+            self.report({'ERROR'}, err)
+            return {'CANCELLED'}
+        current_column = context.scene.sk_current_column
+        change_column = context.scene.sk_change_column
+        sk_mapping = {}
+        for row in csv_data[1:]:
+            if len(row) <= max(current_column, change_column):
+                continue
+            key = str(row[current_column]).strip()
+            value = str(row[change_column]).strip()
+            if not key or not value or key == "None" or value == "None":
+                continue
+            sk_mapping[key] = value
+
+        key_blocks = target_obj.data.shape_keys.key_blocks
+        rename_count = 0
+        for current_name, change_name in sk_mapping.items():
+            try:
+                key_blocks[current_name].name = change_name
+                rename_count += 1
+            except:
+                print(f"{current_name} 不存在")
+
+        # 存储映射记录
+        scene = context.scene
+        mappings = scene.xqfa_shape_key_mappings
+        item = mappings.add()
+        item.label = f"重命名映射 {len(mappings)}"
+        item.expanded = False
+        for current_name, change_name in sk_mapping.items():
+            p = item.pairs.add()
+            p.left_name = current_name
+            p.right_name = change_name
+            p.similarity = ""
+
+        self.report({'INFO'}, f"已重命名 {rename_count} 个形态键")
+        return {'FINISHED'}
+
+
 class XQFA_OT_ApplyAsShapekey(bpy.types.Operator):
     bl_idname = "xqfa.apply_as_shapekey"
     bl_label = "应用为形态键"
@@ -1173,6 +1465,9 @@ classes = (
     O_ShapeKeysClean,
     O_ShapeKeysTransfer,
     O_ShapeKeysResetToZero,
+    O_ShapeKeysSplitLR,
+    O_ShapeKeysCopyNames,
+    O_ShapeKeysRenameByCSV,
     XQFA_OT_ApplyAsShapekey,
 )
 
@@ -1191,6 +1486,19 @@ def register():
         poll=XQFA_Utils.is_mesh
     )
 
+    bpy.types.Scene.sk_current_column = bpy.props.IntProperty(
+        name="源名称",
+        description="源名称改为目标名称\n0是第1列",
+        default=1,
+        min=0,
+    )
+    bpy.types.Scene.sk_change_column = bpy.props.IntProperty(
+        name="目标名称",
+        description="源名称改为目标名称\n0是第1列",
+        default=0,
+        min=0,
+    )
+
 def unregister():
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
@@ -1199,3 +1507,6 @@ def unregister():
         del bpy.types.Scene.xqfa_shape_key_mappings
 
     del bpy.types.Scene.sk_source_mesh
+
+    del bpy.types.Scene.sk_current_column
+    del bpy.types.Scene.sk_change_column

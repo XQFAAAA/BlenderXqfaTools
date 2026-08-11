@@ -2,8 +2,9 @@
 import bpy 
 import re
 import os
-import csv, json
+import csv
 from bpy_extras.io_utils import ImportHelper
+from .bone_pose import _select_pose_bone
 
 ########################## Divider ##########################
 
@@ -519,10 +520,30 @@ class VG_OT_delete_corresponding(bpy.types.Operator):
 
 ########################## Divider ##########################
 
-class O_ImportCSV(bpy.types.Operator, ImportHelper):
-    bl_idname = "xqfa.csv_import"
-    bl_label = "导入CSV"
-    bl_description = ""
+def _read_csv_file(filepath):
+    """读取CSV文件，返回 (csv_data, error_message)"""
+    if not filepath or not os.path.exists(filepath):
+        return None, "请选择有效的CSV文件"
+
+    encodings = ['utf-8', 'gbk', 'utf-16']
+    for encoding in encodings:
+        try:
+            with open(filepath, 'r', newline='', encoding=encoding) as file:
+                reader = csv.reader(file)
+                csv_data = list(reader)
+            return csv_data, None
+        except UnicodeDecodeError:
+            continue
+        except Exception as e:
+            return None, f"导入CSV文件时出现错误: {e}"
+
+    return None, "无法解码CSV文件，请尝试转换为UTF-8编码"
+
+
+class O_BoneSimpleMapping(bpy.types.Operator, ImportHelper):
+    bl_idname = "xqfa.simple_mapping"
+    bl_label = "简化骨骼"
+    bl_description = "根据CSV映射表保留主骨骼、处理合并逻辑并清理多余骨骼"
     filename_ext = ".csv"
     filter_glob: bpy.props.StringProperty(
         default="*.csv",
@@ -530,54 +551,15 @@ class O_ImportCSV(bpy.types.Operator, ImportHelper):
     )
 
     def execute(self, context):
-        csv_file = self.filepath
-
-        if not csv_file or not os.path.exists(csv_file):
-            self.report({'ERROR'}, "请选择有效的CSV文件")
-            return {'CANCELLED'}
-
-        encodings = ['utf-8', 'gbk', 'utf-16']
-        
-        for encoding in encodings:
-            try:
-                with open(csv_file, 'r', newline='', encoding=encoding) as file:
-                    reader = csv.reader(file)
-                    csv_data = list(reader)
-                    context.scene.xbone_csv_data = json.dumps(csv_data)
-                
-                self.report({'INFO'}, f"CSV文件已导入({encoding}): {csv_file}")
-                return {'FINISHED'}
-            except UnicodeDecodeError:
-                continue
-            except Exception as e:
-                self.report({'ERROR'}, f"导入CSV文件时出现错误: {e}")
-                return {'CANCELLED'}
-        
-        self.report({'ERROR'}, "无法解码CSV文件，请尝试转换为UTF-8编码")
-        return {'CANCELLED'}
-
-
-class O_BoneSimpleMapping(bpy.types.Operator):
-    bl_idname = "xqfa.simple_mapping"
-    bl_label = "简化骨骼"
-    bl_description = "根据CSV映射表保留主骨骼、处理合并逻辑并清理多余骨骼"
-
-    def execute(self, context):
         scene = context.scene
-        # 1. 安全检查
-        if not scene.xbone_csv_data:
-            self.report({'ERROR'}, "请先导入CSV文件")
-            return {'CANCELLED'}
-        
         target_obj = context.active_object
         if not target_obj or target_obj.type != 'ARMATURE':
             self.report({'ERROR'}, "请先选中一个骨架对象")
             return {'CANCELLED'}
 
-        try:
-            csv_data = json.loads(scene.xbone_csv_data)
-        except Exception as e:
-            self.report({'ERROR'}, f"解析CSV数据失败: {e}")
+        csv_data, err = _read_csv_file(self.filepath)
+        if err:
+            self.report({'ERROR'}, err)
             return {'CANCELLED'}
 
         # 2. 提取配置
@@ -599,13 +581,13 @@ class O_BoneSimpleMapping(bpy.types.Operator):
             for key, attr in [('main', bone_main), ('save', bone_save)]:
                 idx = cols[key]
                 if row_len > idx:
-                    val = str(row[idx])
+                    val = str(row[idx]).strip()
                     if val and val != "None":
                         attr.add(val)
 
             m_idx, t_idx = cols['active'], cols['to_active']
             if row_len > max(m_idx, t_idx):
-                key_bone, val_bone = str(row[t_idx]), str(row[m_idx])
+                key_bone, val_bone = str(row[t_idx]).strip(), str(row[m_idx]).strip()
                 if all([key_bone, val_bone, key_bone != "None", val_bone != "None"]):
                     bone_mapping[key_bone] = val_bone
 
@@ -699,30 +681,35 @@ class O_BoneSimpleMapping(bpy.types.Operator):
         return {'FINISHED'}
 
 
-class O_only_BoneRenameMapping(bpy.types.Operator):
-    bl_idname = "xqfa.only_rename_mapping"
+class O_BoneRenameMapping(bpy.types.Operator, ImportHelper):
+    bl_idname = "xqfa.bone_rename_mapping"
     bl_label = "重命名"
     bl_description = "将源骨架骨骼按csv对应, 重命名"
+    filename_ext = ".csv"
+    filter_glob: bpy.props.StringProperty(
+        default="*.csv",
+        options={'HIDDEN'},
+    )
 
     def execute(self, context):
-        if context.scene.xbone_csv_data == "":
-            self.report({'ERROR'}, "似乎没有导入csv")
-            return {'FINISHED'}
         TargetArmature = context.active_object
         if not TargetArmature or TargetArmature.type != 'ARMATURE':
             self.report({'ERROR'}, "请先选中一个骨架对象")
-            return {'FINISHED'}
-        
-        csv_data = json.loads(context.scene["xbone_csv_data"])
+            return {'CANCELLED'}
+
+        csv_data, err = _read_csv_file(self.filepath)
+        if err:
+            self.report({'ERROR'}, err)
+            return {'CANCELLED'}
         current_skel_column = context.scene.current_skel_column
         change_skel_column = context.scene.change_skel_column
         bone_mapping = {}
         for row in csv_data[1:]:
             if len(row) <= max(current_skel_column, change_skel_column):
                 continue
-            key = str(row[current_skel_column])
-            value = str(row[change_skel_column])
-            if (key == "None") or (value == "None"):
+            key = str(row[current_skel_column]).strip()
+            value = str(row[change_skel_column]).strip()
+            if not key or not value or key == "None" or value == "None":
                 continue
             bone_mapping[key] = value
 
@@ -751,6 +738,93 @@ class O_only_BoneRenameMapping(bpy.types.Operator):
 
         self.report({'INFO'}, f"已重命名 {rename_count} 个骨骼")
         return {'FINISHED'}
+
+
+class O_BoneCSVSelect(bpy.types.Operator, ImportHelper):
+    bl_idname = "xqfa.csv_bone_sel"
+    bl_label = "选择骨骼"
+    bl_description = "导入CSV并按指定列选择骨骼"
+    filename_ext = ".csv"
+    filter_glob: bpy.props.StringProperty(
+        default="*.csv",
+        options={'HIDDEN'},
+    )
+
+    def execute(self, context):
+        scene = context.scene
+        target_obj = context.active_object
+        if not target_obj or target_obj.type != 'ARMATURE':
+            self.report({'ERROR'}, "请先选中一个骨架对象")
+            return {'CANCELLED'}
+        if target_obj.mode != 'POSE':
+            self.report({'ERROR'}, "请切换到姿态模式")
+            return {'CANCELLED'}
+
+        csv_data, err = _read_csv_file(self.filepath)
+        if err:
+            self.report({'ERROR'}, err)
+            return {'CANCELLED'}
+
+        bone_sel_col = scene.bone_sel_col
+        bone_sel = []
+
+        for row in csv_data[1:]:
+            if len(row) <= bone_sel_col:
+                continue
+            value = str(row[bone_sel_col]).strip()
+            if not value or value == "None":
+                continue
+            bone_sel.append(value)
+
+        # 选择骨骼
+        bpy.ops.pose.select_all(action='DESELECT')
+        selected_count = 0
+        for bone_name in bone_sel:
+            if bone_name in target_obj.pose.bones:
+                _select_pose_bone(target_obj.pose.bones[bone_name])
+                selected_count += 1
+
+        self.report({'INFO'}, f"已选择 {selected_count}/{len(bone_sel)} 个骨骼")
+        return {'FINISHED'}
+
+
+class O_BonePosePrint(bpy.types.Operator):
+    bl_idname = "xqfa.pose_print"
+    bl_label = "复制选中骨骼名称"
+    bl_description = "打印并复制选择的骨骼名称到剪贴板"
+
+    @classmethod
+    def poll(cls, context):
+        """检查是否满足操作条件"""
+        # 必须有一个选中的物体，且是骨架类型，并且当前处于姿态模式
+        return (context.object and
+                context.object.type == 'ARMATURE' and
+                context.object.mode == 'POSE' and
+                context.selected_pose_bones)
+
+    def execute(self, context):
+        selected_bones = context.selected_pose_bones
+        if not selected_bones:
+            self.report({'WARNING'}, "没有选择任何骨骼")
+            return {"CANCELLED"}
+
+        # 收集所有骨骼名称
+        bone_names = [bone.name for bone in selected_bones]
+        output_text = "\n".join(bone_names)
+
+        # 打印到控制台
+        print("选择的骨骼名称:")
+        print(output_text)
+
+        # 复制到Blender剪贴板
+        try:
+            context.window_manager.clipboard = output_text
+            self.report({'INFO'}, f"已复制 {len(bone_names)} 个骨骼名称到剪贴板")
+        except Exception as e:
+            self.report({'ERROR'}, f"复制到剪贴板失败: {str(e)}")
+            return {"CANCELLED"}
+
+        return {"FINISHED"}
 
 
 ########################## Divider ##########################
@@ -799,8 +873,14 @@ class P_VertexGroups(bpy.types.Panel):
         row.operator(O_SelectWeightedBones.bl_idname, text=O_SelectWeightedBones.bl_label, icon="LINENUMBERS_ON")
         row.operator(O_SelectUnweightedBones.bl_idname, text=O_SelectUnweightedBones.bl_label, icon="LINENUMBERS_ON")
 
+
         box = layout.box()
-        box.operator(O_ImportCSV.bl_idname, icon="IMPORT")
+        
+        box.operator(O_BonePosePrint.bl_idname, text=O_BonePosePrint.bl_label, icon='COPYDOWN')
+
+        row = box.row(align=True)
+        row.prop(context.scene, "bone_sel_col")
+        row.operator(O_BoneCSVSelect.bl_idname, text=O_BoneCSVSelect.bl_label, icon="PLAY")
         col = box.column(align=True)
         row = col.row(align=True)
         row.prop(context.scene, "simple_main_column")
@@ -810,12 +890,11 @@ class P_VertexGroups(bpy.types.Panel):
         row.prop(context.scene, "simple_toactive_column")
         col.operator(O_BoneSimpleMapping.bl_idname, icon="PLAY")
 
-        box = layout.box()
         col = box.column(align=True)
         row = col.row(align=True)
         row.prop(context.scene, "current_skel_column")
         row.prop(context.scene, "change_skel_column")
-        col.operator(O_only_BoneRenameMapping.bl_idname, icon="PLAY")
+        col.operator(O_BoneRenameMapping.bl_idname, icon="PLAY")
 
 
 
@@ -831,19 +910,15 @@ def register():
     bpy.utils.register_class(VG_OT_merge_to_parent)
     bpy.utils.register_class(VG_OT_merge_to_active)
     bpy.utils.register_class(VG_OT_delete_corresponding)
-    bpy.utils.register_class(O_ImportCSV)
     bpy.utils.register_class(O_BoneSimpleMapping)
-    bpy.utils.register_class(O_only_BoneRenameMapping)
+    bpy.utils.register_class(O_BoneRenameMapping)
+    bpy.utils.register_class(O_BoneCSVSelect)
+    bpy.utils.register_class(O_BonePosePrint)
     bpy.utils.register_class(P_VertexGroups)
 
     bpy.types.Scene.vg_source_mesh = bpy.props.PointerProperty(type=bpy.types.Object, poll=ObjType.is_mesh)
     bpy.types.Scene.vg_source_armature = bpy.props.PointerProperty(type=bpy.types.Object, poll=ObjType.is_armature)
 
-    bpy.types.Scene.xbone_csv_data = bpy.props.StringProperty(
-        name="CSV Data",
-        description="Stores imported CSV data as JSON",
-        default=""
-    )
     bpy.types.Scene.simple_main_column = bpy.props.IntProperty(
         name="主骨骼",
         description="主要骨骼的列索引",
@@ -880,6 +955,11 @@ def register():
         default=0,
         min=0,
     )
+    bpy.types.Scene.bone_sel_col = bpy.props.IntProperty(
+        name="索引",
+        default=0,
+        min=0,
+    )
 
     bpy.app.handlers.depsgraph_update_post.append(auto_set_vg_armature_handler)
 
@@ -893,9 +973,10 @@ def unregister():
     bpy.utils.unregister_class(VG_OT_merge_to_parent)
     bpy.utils.unregister_class(VG_OT_merge_to_active)
     bpy.utils.unregister_class(VG_OT_delete_corresponding)
-    bpy.utils.unregister_class(O_ImportCSV)
     bpy.utils.unregister_class(O_BoneSimpleMapping)
-    bpy.utils.unregister_class(O_only_BoneRenameMapping)
+    bpy.utils.unregister_class(O_BoneRenameMapping)
+    bpy.utils.unregister_class(O_BoneCSVSelect)
+    bpy.utils.unregister_class(O_BonePosePrint)
     bpy.utils.unregister_class(P_VertexGroups)
 
     if auto_set_vg_armature_handler in bpy.app.handlers.depsgraph_update_post:
@@ -904,10 +985,10 @@ def unregister():
     del bpy.types.Scene.vg_source_mesh
     del bpy.types.Scene.vg_source_armature
 
-    del bpy.types.Scene.xbone_csv_data
     del bpy.types.Scene.simple_main_column
     del bpy.types.Scene.simple_save_column
     del bpy.types.Scene.simple_toactive_column
     del bpy.types.Scene.simple_active_column
     del bpy.types.Scene.current_skel_column
     del bpy.types.Scene.change_skel_column
+    del bpy.types.Scene.bone_sel_col

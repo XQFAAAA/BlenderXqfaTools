@@ -26,14 +26,14 @@ class DATA_PT_uv_map_tools(bpy.types.Panel):
         row.operator(O_SetActiveUVMaps.bl_idname, text="", icon="RESTRICT_SELECT_OFF")
         row.operator(O_SetRenderUVMaps.bl_idname, text="", icon="RESTRICT_RENDER_OFF")
         row.operator(O_RemoveUVMaps.bl_idname, text="", icon="TRASH")
-        row.operator(O_AddRenameUVMaps.bl_idname, text="", icon="SORTALPHA")
+        row.operator(O_AddUVMaps.bl_idname, text="", icon="ADD")
         col.separator()
         col.operator(XQFA_OT_OctahedralUV.bl_idname, icon='UV')
         col.operator(XQFA_OT_ScaleUVIslands.bl_idname, icon='UV_DATA')
 
 
-class O_AddRenameUVMaps(bpy.types.Operator):
-    bl_idname = "xqfa.uv_map_add_rename"
+class O_AddUVMaps(bpy.types.Operator):
+    bl_idname = "xqfa.add_uv_map"
     bl_label = "添加UV"
     bl_description = "在顶部添加TEXCOORD.xy格式的UV贴图"
 
@@ -558,7 +558,7 @@ class XQFA_OT_ScaleUVIslands(bpy.types.Operator):
 
 classes = (
     DATA_PT_uv_map_tools,
-    O_AddRenameUVMaps,
+    O_AddUVMaps,
     O_SetActiveUVMaps,
     O_SetRenderUVMaps,
     O_RemoveUVMaps,

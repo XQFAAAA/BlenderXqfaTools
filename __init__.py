@@ -17,7 +17,7 @@ from . import panel
 from .bone_tools import bone_and_vertex_groups, bone_pose, bone_edit
 from .attribute_tools import vertex_groups, shapekey, uv, vertex_colors, extra_object_info, face_bool
 from .other_tools import misc, rename_tools, uv_tools
-from .material_tools import material, bake_node_groups, material_snapshot
+from .material_tools import material, material_snapshot
 
 class XqfaPreferences(bpy.types.AddonPreferences):
     bl_idname = __package__
@@ -61,7 +61,6 @@ def register():
     uv_tools.register()
     material.register()
     material_snapshot.register()
-    bake_node_groups.register()
 
 # 注销插件
 def unregister():
@@ -81,7 +80,6 @@ def unregister():
     misc.unregister()
     material.unregister()
     material_snapshot.unregister()
-    bake_node_groups.unregister()
 
 
 if __name__ == "__main__":

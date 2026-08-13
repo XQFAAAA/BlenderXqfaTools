@@ -19,8 +19,12 @@ class XQFA_PT_RenameTools(bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
+        row = layout.row(align=True)
+        op = row.operator(XQFA_OT_AddNameAffix.bl_idname, text="前缀", icon="OUTLINER_OB_FONT")
+        op.mode = 'PREFIX'
+        op = row.operator(XQFA_OT_AddNameAffix.bl_idname, text="后缀", icon="OUTLINER_OB_FONT")
+        op.mode = 'SUFFIX'
         col = layout.column()
-        col.operator(XQFA_OT_RenameComponents.bl_idname, icon="OUTLINER_OB_EMPTY")
         col.operator(XQFA_OT_ObjectNameToMaterial.bl_idname, icon="SYNTAX_ON")
         col.operator(XQFA_OT_MaterialToObjectName.bl_idname, icon="SYNTAX_OFF")
         col.operator(XQFA_OT_SearchReplaceObjectName.bl_idname, icon='FONT_DATA')
@@ -28,12 +32,45 @@ class XQFA_PT_RenameTools(bpy.types.Panel):
 
 # --- 算子 (Operators) ---
 
-class XQFA_OT_RenameComponents(bpy.types.Operator):
-    """将选中物体名称中 C+数字 前缀替换为 Component +数字，同时也对每个物体的材质名执行相同匹配"""
-    bl_idname = "xqfa.rename_to_components"
-    bl_label = "重命名：C-->Components"
-    bl_description = "匹配格式 C+数字(如C0-body) 替换为 Component +数字(如Component 0.-body)，同时对选中物体的材质名也执行相同匹配"
+class XQFA_OT_AddNameAffix(bpy.types.Operator):
+    """为选中物体的名称添加前缀或后缀，同时也对每个物体的材质名执行相同操作"""
+    bl_idname = "xqfa.add_name_affix"
+    bl_label = "添加名称前后缀"
+    bl_description = "为选中物体的名称添加前缀或后缀，同时对选中物体的材质名也执行相同操作"
     bl_options = {'REGISTER', 'UNDO'}
+
+    mode: bpy.props.EnumProperty(
+        name="模式",
+        description="添加前缀还是后缀",
+        items=[
+            ('PREFIX', "前缀", "在名称前添加前缀"),
+            ('SUFFIX', "后缀", "在名称后添加后缀"),
+        ],
+        default='PREFIX',
+    )
+
+    prefix: bpy.props.StringProperty(
+        name="前缀",
+        description="要添加到名称前面的前缀文本",
+        default="Component ",
+    )
+
+    suffix: bpy.props.StringProperty(
+        name="后缀",
+        description="要添加到名称后面的后缀文本",
+        default="",
+    )
+
+    def invoke(self, context, event):
+        wm = context.window_manager
+        return wm.invoke_props_dialog(self, width=300)
+
+    def draw(self, context):
+        layout = self.layout
+        if self.mode == 'PREFIX':
+            layout.prop(self, "prefix")
+        else:
+            layout.prop(self, "suffix")
 
     def execute(self, context):
         selected_objects = context.selected_objects
@@ -42,45 +79,52 @@ class XQFA_OT_RenameComponents(bpy.types.Operator):
             self.report({'WARNING'}, "未选择任何物体")
             return {'CANCELLED'}
 
+        is_prefix = self.mode == 'PREFIX'
+        affix = self.prefix if is_prefix else self.suffix
+        kind = "前缀" if is_prefix else "后缀"
+
+        if not affix:
+            self.report({'WARNING'}, f"{kind}不能为空")
+            return {'CANCELLED'}
+
         rename_object_count = 0
         rename_material_count = 0
 
-        # 正则表达式解释：
-        # ^C : 匹配开头是大写字母 C
-        # (\d+) : 匹配并捕获一个或多个数字
-        # (.*) : 匹配并捕获之后的所有剩余字符
-        pattern = re.compile(r"^C(\d+)(.*)")
-
         for obj in selected_objects:
             old_name = obj.name
-            match = pattern.match(old_name)
-
-            if match:
-                number = match.group(1)
-                suffix = match.group(2)
-                new_name = f"Component {number}.{suffix}"
-                obj.name = new_name
-                rename_object_count += 1
-                print(f"Renamed Object '{old_name}' -> '{new_name}'")
+            if is_prefix:
+                already = old_name.startswith(affix)
+                new_name = f"{affix}{old_name}"
             else:
-                print(f"Skipped Object '{old_name}' (格式不匹配)")
+                already = old_name.endswith(affix)
+                new_name = f"{old_name}{affix}"
 
-            # 对物体上的所有材质名执行相同匹配
+            if already:
+                print(f"Skipped Object '{old_name}' (已包含该{kind})")
+                continue
+
+            obj.name = new_name
+            rename_object_count += 1
+            print(f"Renamed Object '{old_name}' -> '{new_name}'")
+
+            # 对物体上的所有材质名执行相同操作
             if obj.type == 'MESH' and obj.data.materials:
-                for i, mat in enumerate(obj.data.materials):
+                for mat in obj.data.materials:
                     if mat is None:
                         continue
                     old_mat_name = mat.name
-                    mat_match = pattern.match(old_mat_name)
-                    if mat_match:
-                        mat_number = mat_match.group(1)
-                        mat_suffix = mat_match.group(2)
-                        new_mat_name = f"Component {mat_number}.{mat_suffix}"
-                        mat.name = new_mat_name
-                        rename_material_count += 1
-                        print(f"Renamed Material '{old_mat_name}' -> '{new_mat_name}'")
+                    if is_prefix:
+                        mat_already = old_mat_name.startswith(affix)
+                        new_mat_name = f"{affix}{old_mat_name}"
                     else:
-                        print(f"Skipped Material '{old_mat_name}' (格式不匹配)")
+                        mat_already = old_mat_name.endswith(affix)
+                        new_mat_name = f"{old_mat_name}{affix}"
+                    if mat_already:
+                        print(f"Skipped Material '{old_mat_name}' (已包含该{kind})")
+                        continue
+                    mat.name = new_mat_name
+                    rename_material_count += 1
+                    print(f"Renamed Material '{old_mat_name}' -> '{new_mat_name}'")
 
         self.report({'INFO'}, f"成功重命名 {rename_object_count} 个物体, {rename_material_count} 个材质")
         return {'FINISHED'}
@@ -217,7 +261,7 @@ class XQFA_OT_SearchReplaceObjectName(bpy.types.Operator):
 
 classes = (
     XQFA_PT_RenameTools,
-    XQFA_OT_RenameComponents,
+    XQFA_OT_AddNameAffix,
     XQFA_OT_ObjectNameToMaterial,
     XQFA_OT_MaterialToObjectName,
     XQFA_OT_SearchReplaceObjectName,

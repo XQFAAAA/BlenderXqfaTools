@@ -121,39 +121,95 @@ class O_RemoveColorAttributes(bpy.types.Operator):
 
 class O_AddAndRenameColorAttributes(bpy.types.Operator):
     bl_idname = "xqfa.color_attr_add_rename"
-    bl_label = "添加并重命名序列"
-    bl_description = "确保顶点色层数足够，并统一重命名为 COLOR, COLOR1, COLOR2..."
+    bl_label = "添加顶点色序列"
+    bl_description = "在顶部添加 COLOR, COLOR1... 顶点色层，不覆盖不重命名已有层"
     bl_options = {'REGISTER', 'UNDO'}
+
+    @staticmethod
+    def _prepend_color_attributes(mesh, count):
+        """在顶点色列表顶部添加count个新层，原有层顺序不变向下顺延"""
+        color_attrs = mesh.color_attributes
+
+        # 快照原有层（名称、域、数据类型、颜色数据）及活动/渲染索引
+        original = [(a.name, a.domain, a.data_type, [d.color[:] for d in a.data]) for a in color_attrs]
+        active_index = color_attrs.active_color_index
+        render_index = getattr(color_attrs, 'render_color_index', -1)
+
+        # 快照当前活动层的颜色数据，用于填充新增层（新增层内容与活动层相同）
+        active_attr = color_attrs[active_index] if 0 <= active_index < len(original) else None
+        active_data = [d.color[:] for d in active_attr.data] if active_attr else None
+        active_domain = active_attr.domain if active_attr else 'CORNER'
+
+        # 新层命名避免与原有层冲突
+        used_names = {name for name, _, _, _ in original}
+        new_names = []
+        i = 0
+        while len(new_names) < count:
+            name = f"COLOR{i}" if i > 0 else "COLOR"
+            if name not in used_names:
+                used_names.add(name)
+                new_names.append(name)
+            i += 1
+
+        # 1. 删除所有原有层（使列表清空，后续新层自然排在最前）
+        for a in list(color_attrs):
+            color_attrs.remove(a)
+
+        # 2. 创建新层并复制活动层的颜色数据
+        for name in new_names:
+            new_layer = color_attrs.new(name=name, type='BYTE_COLOR', domain='CORNER')
+            if new_layer is None:
+                raise RuntimeError("创建顶点色失败：可能已达数量上限或网格没有面")
+            if active_data is not None:
+                if active_domain == 'CORNER':
+                    for li, col in enumerate(active_data):
+                        new_layer.data[li].color = col
+                else:  # POINT 域：按顶点索引映射到面角
+                    for li, loop in enumerate(mesh.loops):
+                        new_layer.data[li].color = active_data[loop.vertex_index]
+
+        # 3. 按原顺序重建原有层
+        for src_name, src_domain, src_type, color_list in original:
+            copied = color_attrs.new(name=src_name, type=src_type, domain=src_domain)
+            if copied is None:
+                raise RuntimeError("创建顶点色失败：可能已达数量上限或网格没有面")
+            for li, col in enumerate(color_list):
+                copied.data[li].color = col
+
+        # 4. 恢复活动/渲染层（新增层在顶部，原索引整体下移 count 位）
+        if original:
+            color_attrs.active_color_index = active_index + count
+            if render_index >= 0:
+                color_attrs.render_color_index = render_index + count
 
     def execute(self, context):
         scene = context.scene
         target_index = scene.color_attr_target_index
+        count = target_index + 1
+
         processed_objects = 0
+        added_colors = 0
 
         for obj in context.selected_objects:
             if obj.type != 'MESH':
                 continue
             processed_objects += 1
-            mesh = obj.data
-
-            current_count = len(mesh.color_attributes)
-            if current_count < target_index + 1:
-                for j in range(current_count, target_index + 1):
-                    mesh.color_attributes.new(
-                        name="TEMP",
-                        type='BYTE_COLOR',
-                        domain='CORNER'
-                    )
-
-            for k, attr in enumerate(mesh.color_attributes):
-                attr.name = f"{k}"
-            for k, attr in enumerate(mesh.color_attributes):
-                attr.name = f"COLOR{k}" if k > 0 else "COLOR"
+            color_attrs = obj.data.color_attributes
+            # Blender 每个网格最多 31 个顶点色（MAX_MTCOL 限制）
+            if len(color_attrs) + count > 31:
+                self.report({'WARNING'}, f"物体 {obj.name} 添加顶点色失败：Blender 每网格最多 31 个顶点色（当前 {len(color_attrs)} 个，还需 {count} 个）")
+                continue
+            try:
+                self._prepend_color_attributes(obj.data, count)
+            except RuntimeError as e:
+                self.report({'WARNING'}, f"物体 {obj.name} 添加顶点色失败：{e}")
+                continue
+            added_colors += count
 
         for area in context.screen.areas:
             area.tag_redraw()
         context.view_layer.update()
-        self.report({'INFO'}, f"完成: {processed_objects}个物体")
+        self.report({'INFO'}, f"处理完成: {processed_objects}个物体, 添加{added_colors}个")
         return {'FINISHED'}
 
 
@@ -318,7 +374,7 @@ class DATA_PT_color_attribute_tools(bpy.types.Panel):
         row.operator(O_SetActiveColorAttributes.bl_idname, text="", icon="RESTRICT_SELECT_OFF")
         row.operator(O_SetRenderColorAttributes.bl_idname, text="", icon="RESTRICT_RENDER_OFF")
         row.operator(O_RemoveColorAttributes.bl_idname, text="", icon="TRASH")
-        row.operator(O_AddAndRenameColorAttributes.bl_idname, text="", icon='SORTALPHA')
+        row.operator(O_AddAndRenameColorAttributes.bl_idname, text="", icon='ADD')
         row.operator(O_ConvertColorAttributeType.bl_idname, text="", icon='UV_SYNC_SELECT')
 
         col = layout.column(align=True)

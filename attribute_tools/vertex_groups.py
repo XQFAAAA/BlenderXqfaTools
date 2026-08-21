@@ -5,6 +5,71 @@ import time
 from typing import Dict, Tuple, Set, List, Optional
 from bpy.props import EnumProperty
 
+
+def _rename_vgs_safe(vgs: bpy.types.VertexGroups, renames: List[Tuple[str, str]]) -> Tuple[int, int]:
+    """
+    两阶段安全重命名顶点组，避免目标名冲突产生 .001 后缀。
+
+    阶段1：把所有待改名顶点组（以及名字会阻碍目标名的保留组）改为唯一临时名；
+    阶段2：再统一改回最终目标名。
+    这样即使存在重命名循环（A→B 且 B→A），或目标名被某个未改名的保留组占用
+    （例如空顶点组），也能在不触发 Blender 自动追加 .001 的情况下完成重命名：
+    阻碍目标名的保留组会以“原名 + .001”的后缀让出目标名。
+
+    返回 (renamed, skipped)：renamed 为找到并处理的组数，skipped 为未找到的组数。
+    """
+    renamed = 0
+    skipped = 0
+    to_rename: List[Tuple[bpy.types.VertexGroup, str]] = []
+    target_names: Set[str] = set()
+
+    for old, new in renames:
+        vg = vgs.get(old)
+        if vg is None:
+            skipped += 1
+            continue
+        renamed += 1
+        if old != new:
+            to_rename.append((vg, new))
+            target_names.add(new)
+
+    if not to_rename:
+        return renamed, skipped
+
+    # 找出会阻碍阶段2的“保留组”：名字恰好是某个目标名，且自身不在待改名列表中
+    renaming_names = {vg.name for vg, _ in to_rename}
+    blockers = [
+        vg for vg in vgs
+        if vg.name in target_names and vg.name not in renaming_names
+    ]
+
+    # 阶段1：待改名组 + 阻碍组 -> 唯一临时名
+    tmp_records: List[Tuple[bpy.types.VertexGroup, str]] = []
+    used_tmp = {vg.name for vg in vgs}
+    for vg, final_name in to_rename:
+        tmp_name = f"__xqfa_tmp_{len(tmp_records)}__"
+        while tmp_name in used_tmp:
+            tmp_name += "_"
+        used_tmp.add(tmp_name)
+        vg.name = tmp_name
+        tmp_records.append((vg, final_name))
+    for vg in blockers:
+        tmp_name = f"__xqfa_tmp_{len(tmp_records)}__"
+        while tmp_name in used_tmp:
+            tmp_name += "_"
+        used_tmp.add(tmp_name)
+        orig_name = vg.name
+        vg.name = tmp_name
+        # 阻碍组让出目标名：加 .001 后缀
+        tmp_records.append((vg, orig_name + ".001"))
+
+    # 阶段2：临时名 -> 最终目标名
+    for vg, final_name in tmp_records:
+        vg.name = final_name
+
+    return renamed, skipped
+
+
 class DATA_PT_vertex_group_tools(bpy.types.Panel):
     bl_label = "顶点组"
     bl_space_type = 'VIEW_3D'
@@ -159,17 +224,8 @@ class O_VertexGroupMappingApply(bpy.types.Operator):
 
         for obj in selected_objs:
             vgs = obj.vertex_groups
-            obj_renamed = 0
-            for old_name, new_name in lookup:
-                vg = vgs.get(old_name)
-                if vg is None:
-                    total_skipped += 1
-                    continue
-                try:
-                    vg.name = new_name
-                    obj_renamed += 1
-                except Exception:
-                    total_skipped += 1
+            obj_renamed, obj_skipped = _rename_vgs_safe(vgs, lookup)
+            total_skipped += obj_skipped
             if obj_renamed > 0:
                 total_renamed += obj_renamed
                 affected_objs += 1
@@ -653,15 +709,19 @@ class O_VertexGroupsMatchRename(bpy.types.Operator):
         renamed_count = 0
         pair_items: List[Tuple[str, str, str]] = []
 
+        # 先收集所有重命名计划，再统一两阶段安全执行，避免重名冲突产生 .001
+        rename_plan: List[Tuple[str, str]] = []
         for orig_name in original_vg_names:
             match_info = match_lookup.get(orig_name, (None, "-"))
             a_name, similarity_str = match_info
             if a_name:
-                obj_b.vertex_groups[orig_name].name = a_name
+                rename_plan.append((orig_name, a_name))
                 pair_items.append((orig_name, a_name, similarity_str))
                 renamed_count += 1
             else:
                 pair_items.append((orig_name, orig_name, similarity_str))
+
+        _rename_vgs_safe(obj_b.vertex_groups, rename_plan)
 
         return {
             'renamed_count': renamed_count,

@@ -1,0 +1,614 @@
+namespace = Mods\f96a011426eb432a90361203d473fe60
+; WWMI BETA-8 INI
+
+; Mod State -------------------------
+
+[Constants]
+global $required_wwmi_version = 1.00
+global $object_guid = 296013
+global $mesh_vertex_count = 152522
+global $shapekey_vertex_count = 120177
+global $shapekey_vertex_offset_batch0 = 0
+global $shapekey_vertex_count_batch0 = 102599
+global $shapekey_vertex_offset_batch1 = 102599
+global $shapekey_vertex_count_batch1 = 17578
+global $mod_id = -1000
+global $state_id = 0
+global $mod_enabled = 0
+global $object_detected = 0
+global $merge_status_id = 0
+global $merge_status_id_0 = 0
+global $merge_status_id_1 = 0
+global $merge_status_id_2 = 0
+global $merge_status_id_3 = 0
+global $merge_status_id_4 = 0
+global $merge_status_id_5 = 0
+global $merge_status_id_6 = 0
+global $merge_status_id_7 = 0
+
+[Present]
+if $object_detected
+    if $mod_enabled
+        post $object_detected = 0
+        run = CommandListInitializeBlendRemaps
+        run = CommandListUpdateMergedSkeleton
+    else
+        if $mod_id == -1000
+            run = CommandListRegisterMod
+        endif
+    endif
+endif
+
+[CommandListRegisterMod]
+$\WWMIv1\required_wwmi_version = $required_wwmi_version
+$\WWMIv1\object_guid = $object_guid
+Resource\WWMIv1\ModName = ref ResourceModName
+Resource\WWMIv1\ModAuthor = ref ResourceModAuthor
+Resource\WWMIv1\ModDesc = ref ResourceModDesc
+Resource\WWMIv1\ModLink = ref ResourceModLink
+Resource\WWMIv1\ModLogo = ref ResourceModLogo
+run = CommandList\WWMIv1\RegisterMod
+$mod_id = $\WWMIv1\mod_id
+if $mod_id >= 0
+    $mod_enabled = 1
+endif
+
+[CommandListUpdateMergedSkeleton]
+$merge_status_id_0 = 0
+$merge_status_id_1 = 0
+$merge_status_id_2 = 0
+$merge_status_id_3 = 0
+$merge_status_id_4 = 0
+$merge_status_id_5 = 0
+$merge_status_id_6 = 0
+$merge_status_id_7 = 0
+ResourceMergedSkeleton = copy ResourceMergedSkeletonRW
+ResourceExtraMergedSkeleton = copy ResourceExtraMergedSkeletonRW
+run = CommandListRemapMergedSkeleton
+
+[ResourceMergedSkeletonRemap]
+[ResourceExtraMergedSkeletonRemap]
+
+[ResourceBlendBufferOverride]
+[ResourceExtraMergedSkeletonOverride]
+[ResourceMergedSkeletonOverride]
+
+[ResourceRemappedBlendBufferRW]
+[ResourceRemappedSkeletonRW]
+[ResourceExtraRemappedSkeletonRW]
+
+[ResourceRemappedBlendBufferComponent5]
+[ResourceRemappedSkeletonComponent5]
+[ResourceExtraRemappedSkeletonComponent5]
+
+[ResourceRemappedBlendBufferComponent7]
+[ResourceRemappedSkeletonComponent7]
+[ResourceExtraRemappedSkeletonComponent7]
+
+[CommandListInitializeBlendRemaps]
+local $blend_remaps_initialized
+if !$blend_remaps_initialized
+    ResourceRemappedSkeletonRW = copy ResourceMergedSkeletonRW
+    ResourceExtraRemappedSkeletonRW = copy ResourceExtraMergedSkeletonRW
+
+    $\WWMIv1\custom_vertex_count = $mesh_vertex_count
+    $\WWMIv1\weights_per_vertex_count = 8
+    cs-t34 = ref ResourceBlendRemapReverseBuffer
+    cs-t35 = ref ResourceBlendRemapVertexVGBuffer
+
+    $\WWMIv1\blend_remap_id = 0
+    ResourceRemappedBlendBufferRW = copy ResourceBlendBufferNoStride
+    cs-u4 = ref ResourceRemappedBlendBufferRW
+    run = CustomShader\WWMIv1\BlendRemapper
+    ResourceRemappedBlendBufferComponent5 = copy ResourceRemappedBlendBufferRW
+    ResourceRemappedBlendBufferComponent5 = copy_desc ResourceBlendBuffer
+
+    $\WWMIv1\blend_remap_id = 1
+    ResourceRemappedBlendBufferRW = copy ResourceBlendBufferNoStride
+    cs-u4 = ref ResourceRemappedBlendBufferRW
+    run = CustomShader\WWMIv1\BlendRemapper
+    ResourceRemappedBlendBufferComponent7 = copy ResourceRemappedBlendBufferRW
+    ResourceRemappedBlendBufferComponent7 = copy_desc ResourceBlendBuffer
+
+    $blend_remaps_initialized = 1
+endif
+
+[CommandListRemapMergedSkeleton]
+ResourceMergedSkeletonRemap = copy ResourceMergedSkeletonRW
+ResourceExtraMergedSkeletonRemap = copy ResourceExtraMergedSkeletonRW
+
+cs-t37 = ResourceBlendRemapForwardBuffer
+
+$\WWMIv1\blend_remap_id = 0
+$\WWMIv1\vg_count = 66
+cs-t38 = ResourceMergedSkeletonRemap
+cs-u5 = ResourceRemappedSkeletonRW
+run = CustomShader\WWMIv1\SkeletonRemapper
+ResourceRemappedSkeletonComponent5 = copy ResourceRemappedSkeletonRW
+cs-t38 = ResourceExtraMergedSkeletonRemap
+cs-u5 = ResourceExtraRemappedSkeletonRW
+run = CustomShader\WWMIv1\SkeletonRemapper
+ResourceExtraRemappedSkeletonComponent5 = copy ResourceExtraRemappedSkeletonRW
+
+$\WWMIv1\blend_remap_id = 1
+$\WWMIv1\vg_count = 69
+cs-t38 = ResourceMergedSkeletonRemap
+cs-u5 = ResourceRemappedSkeletonRW
+run = CustomShader\WWMIv1\SkeletonRemapper
+ResourceRemappedSkeletonComponent7 = copy ResourceRemappedSkeletonRW
+cs-t38 = ResourceExtraMergedSkeletonRemap
+cs-u5 = ResourceExtraRemappedSkeletonRW
+run = CustomShader\WWMIv1\SkeletonRemapper
+ResourceExtraRemappedSkeletonComponent7 = copy ResourceExtraRemappedSkeletonRW
+
+; Resources: Mod Info -------------------------
+
+[ResourceModName]
+type = Buffer
+data = "Unnamed Mod"
+
+[ResourceModAuthor]
+type = Buffer
+data = "Unknown Author"
+
+[ResourceModDesc]
+; type = Buffer
+; data = "Empty Mod Description"
+
+[ResourceModLink]
+; type = Buffer
+; data = "Empty Mod Link"
+
+[ResourceModLogo]
+; filename = Textures/Logo.dds
+
+; Shading: Draw Call Stacks Processing -------------------------
+
+[TextureOverrideMarkBoneDataCB]
+hash = f02baf77
+match_priority = 0
+filter_index = 3381.7777
+
+[CommandListMergeSkeleton]
+if $merge_status_id == 0
+	if vs-cb4 == 3381.7777
+		cs-cb8 = ref vs-cb4
+		cs-u6 = ResourceMergedSkeletonRW
+		$\WWMIv1\custom_mesh_scale = 1.00
+		run = CustomShader\WWMIv1\SkeletonMerger
+		$merge_status_id = 1
+	endif
+endif
+if $merge_status_id == 1
+	if vs-cb4 == 3381.7777 && vs-cb3 == 3381.7777
+		cs-cb8 = ref vs-cb3
+		cs-u6 = ResourceExtraMergedSkeletonRW
+		$\WWMIv1\custom_mesh_scale = 1.00
+		run = CustomShader\WWMIv1\SkeletonMerger
+		$merge_status_id = 2
+	endif
+endif
+
+[CommandListTriggerResourceOverrides]
+CheckTextureOverride = ps-t0
+CheckTextureOverride = ps-t1
+CheckTextureOverride = ps-t2
+CheckTextureOverride = ps-t3
+CheckTextureOverride = ps-t4
+CheckTextureOverride = ps-t5
+CheckTextureOverride = ps-t6
+CheckTextureOverride = ps-t7
+CheckTextureOverride = ps-t8
+CheckTextureOverride = ps-t9
+CheckTextureOverride = ps-t10
+CheckTextureOverride = ps-t11
+CheckTextureOverride = vs-cb3
+CheckTextureOverride = vs-cb4
+
+[CommandListOverrideSharedResources]
+ResourceBypassVB0 = ref vb0
+ib = ResourceIndexBuffer
+vb0 = ResourcePositionBuffer
+vb1 = ResourceVectorBuffer
+vb2 = ResourceTexcoordBuffer
+vb3 = ResourceColorBuffer
+if ResourceBlendBufferOverride === null
+    vb4 = ResourceBlendBuffer
+    if vs-cb4 == 3381.7777
+        vs-cb4 = ref ResourceMergedSkeleton
+		if vs-cb3 == 3381.7777
+			vs-cb3 = ref ResourceExtraMergedSkeleton
+		endif
+	elif vs-cb3 == 3381.7777
+		vs-cb3 = ref ResourceMergedSkeleton
+    endif
+else
+    vb4 = ref ResourceBlendBufferOverride
+    if vs-cb4 == 3381.7777
+        vs-cb4 = ref ResourceMergedSkeletonOverride
+		if vs-cb3 == 3381.7777
+			vs-cb3 = ref ResourceExtraMergedSkeletonOverride
+		endif
+	elif vs-cb3 == 3381.7777
+		vs-cb3 = ref ResourceMergedSkeletonOverride
+    endif
+endif
+
+[CommandListCleanupSharedResources]
+vb0 = ref ResourceBypassVB0
+if ResourceBlendBufferOverride !== null
+    ResourceBlendBufferOverride = null
+    ResourceMergedSkeletonOverride = null
+    ResourceExtraMergedSkeletonOverride = null
+endif
+
+[TextureOverrideComponent0]
+hash = 3d7b9c89
+match_first_index = 0
+match_index_count = 18078
+$object_detected = 1
+if $mod_enabled
+    if $merge_status_id_0 != 2
+        $\WWMIv1\vg_offset = 0
+        $\WWMIv1\vg_count = 20
+		$merge_status_id = $merge_status_id_0
+		run = CommandListMergeSkeleton
+		$merge_status_id_0 = $merge_status_id
+	endif
+    if ResourceMergedSkeleton !== null
+        handling = skip
+        ; run = CommandListTriggerResourceOverrides
+        run = CommandListOverrideSharedResources
+        ; Draw Component 0
+		drawindexed = 18078, 0, 0
+        run = CommandListCleanupSharedResources
+    endif
+endif
+
+[TextureOverrideComponent1]
+hash = 3d7b9c89
+match_first_index = 18078
+match_index_count = 45453
+$object_detected = 1
+if $mod_enabled
+    if $merge_status_id_1 != 2
+        $\WWMIv1\vg_offset = 20
+        $\WWMIv1\vg_count = 49
+		$merge_status_id = $merge_status_id_1
+		run = CommandListMergeSkeleton
+		$merge_status_id_1 = $merge_status_id
+	endif
+    if ResourceMergedSkeleton !== null
+        handling = skip
+        ; run = CommandListTriggerResourceOverrides
+        run = CommandListOverrideSharedResources
+        ; Draw Component 1
+		drawindexed = 45453, 18078, 0
+        run = CommandListCleanupSharedResources
+    endif
+endif
+
+[TextureOverrideComponent2]
+hash = 3d7b9c89
+match_first_index = 63531
+match_index_count = 14022
+$object_detected = 1
+if $mod_enabled
+    if $merge_status_id_2 != 2
+        $\WWMIv1\vg_offset = 69
+        $\WWMIv1\vg_count = 30
+		$merge_status_id = $merge_status_id_2
+		run = CommandListMergeSkeleton
+		$merge_status_id_2 = $merge_status_id
+	endif
+    if ResourceMergedSkeleton !== null
+        handling = skip
+        ; run = CommandListTriggerResourceOverrides
+        run = CommandListOverrideSharedResources
+        ; Draw Component 2
+		drawindexed = 14022, 63531, 0
+        run = CommandListCleanupSharedResources
+    endif
+endif
+
+[TextureOverrideComponent3]
+hash = 3d7b9c89
+match_first_index = 77553
+match_index_count = 91068
+$object_detected = 1
+if $mod_enabled
+    if $merge_status_id_3 != 2
+        $\WWMIv1\vg_offset = 99
+        $\WWMIv1\vg_count = 101
+		$merge_status_id = $merge_status_id_3
+		run = CommandListMergeSkeleton
+		$merge_status_id_3 = $merge_status_id
+	endif
+    if ResourceMergedSkeleton !== null
+        handling = skip
+        ; run = CommandListTriggerResourceOverrides
+        run = CommandListOverrideSharedResources
+        ; Draw Component 3
+		drawindexed = 91068, 77553, 0
+        run = CommandListCleanupSharedResources
+    endif
+endif
+
+[TextureOverrideComponent4]
+hash = 3d7b9c89
+match_first_index = 168621
+match_index_count = 57756
+$object_detected = 1
+if $mod_enabled
+    if $merge_status_id_4 != 2
+        $\WWMIv1\vg_offset = 200
+        $\WWMIv1\vg_count = 41
+		$merge_status_id = $merge_status_id_4
+		run = CommandListMergeSkeleton
+		$merge_status_id_4 = $merge_status_id
+	endif
+    if ResourceMergedSkeleton !== null
+        handling = skip
+        ; run = CommandListTriggerResourceOverrides
+        run = CommandListOverrideSharedResources
+        ; Draw Component 4
+		drawindexed = 57756, 168621, 0
+        run = CommandListCleanupSharedResources
+    endif
+endif
+
+[TextureOverrideComponent5]
+hash = 3d7b9c89
+match_first_index = 226377
+match_index_count = 47034
+$object_detected = 1
+if $mod_enabled
+    if $merge_status_id_5 != 2
+        $\WWMIv1\vg_offset = 241
+        $\WWMIv1\vg_count = 66
+		$merge_status_id = $merge_status_id_5
+		run = CommandListMergeSkeleton
+		$merge_status_id_5 = $merge_status_id
+	endif
+    if ResourceMergedSkeleton !== null
+        handling = skip
+        ResourceBlendBufferOverride = ref ResourceRemappedBlendBufferComponent5
+        ResourceMergedSkeletonOverride = ref ResourceRemappedSkeletonComponent5
+        ResourceExtraMergedSkeletonOverride = ref ResourceExtraRemappedSkeletonComponent5
+        ; run = CommandListTriggerResourceOverrides
+        run = CommandListOverrideSharedResources
+        ; Draw Component 5
+		drawindexed = 47034, 226377, 0
+        run = CommandListCleanupSharedResources
+    endif
+endif
+
+[TextureOverrideComponent6]
+hash = 3d7b9c89
+match_first_index = 273411
+match_index_count = 1626
+$object_detected = 1
+if $mod_enabled
+    if $merge_status_id_6 != 2
+        $\WWMIv1\vg_offset = 307
+        $\WWMIv1\vg_count = 1
+		$merge_status_id = $merge_status_id_6
+		run = CommandListMergeSkeleton
+		$merge_status_id_6 = $merge_status_id
+	endif
+    if ResourceMergedSkeleton !== null
+        handling = skip
+        ; run = CommandListTriggerResourceOverrides
+        run = CommandListOverrideSharedResources
+        ; Draw Component 6
+		drawindexed = 1626, 273411, 0
+        run = CommandListCleanupSharedResources
+    endif
+endif
+
+[TextureOverrideComponent7]
+hash = 3d7b9c89
+match_first_index = 275037
+match_index_count = 20976
+$object_detected = 1
+if $mod_enabled
+    if $merge_status_id_7 != 2
+        $\WWMIv1\vg_offset = 308
+        $\WWMIv1\vg_count = 69
+		$merge_status_id = $merge_status_id_7
+		run = CommandListMergeSkeleton
+		$merge_status_id_7 = $merge_status_id
+	endif
+    if ResourceMergedSkeleton !== null
+        handling = skip
+        ResourceBlendBufferOverride = ref ResourceRemappedBlendBufferComponent7
+        ResourceMergedSkeletonOverride = ref ResourceRemappedSkeletonComponent7
+        ResourceExtraMergedSkeletonOverride = ref ResourceExtraRemappedSkeletonComponent7
+        ; run = CommandListTriggerResourceOverrides
+        run = CommandListOverrideSharedResources
+        ; Draw Component 7
+		drawindexed = 20976, 275037, 0
+        run = CommandListCleanupSharedResources
+    endif
+endif
+
+; Shading: Textures -------------------------
+
+; Skinning: Shape Keys Override -------------------------
+
+[TextureOverrideShapeKeyOffsets]
+hash = 3c20751d
+match_priority = 0
+override_byte_stride = 24
+override_vertex_count = $mesh_vertex_count
+
+[TextureOverrideShapeKeyScale]
+hash = 11e9a4da
+match_priority = 0
+override_byte_stride = 4
+override_vertex_count = $mesh_vertex_count
+
+[CommandListSetupShapeKeysBatch]
+$\WWMIv1\shapekey_checksum_batch0 = 24685
+$\WWMIv1\shapekey_vertex_offset_original_batch0 = 0
+$\WWMIv1\shapekey_vertex_offset_custom_batch0 = $shapekey_vertex_offset_batch0
+$\WWMIv1\shapekey_checksum_batch1 = 5861
+$\WWMIv1\shapekey_vertex_offset_original_batch1 = 102456
+$\WWMIv1\shapekey_vertex_offset_custom_batch1 = $shapekey_vertex_offset_batch1
+cs-t33 = ResourceShapeKeyOffsetBuffer
+cs-u5 = ResourceCustomShapeKeyValuesRW
+cs-u6 = ResourceShapeKeyCBRW
+run = CustomShader\WWMIv1\ShapeKeyBatchOverrider
+
+[CommandListLoadShapeKeysBatch]
+$\WWMIv1\shapekey_dispatch_size_y_original_batch0 = 3202
+$\WWMIv1\shapekey_vertex_count_batch0 = $shapekey_vertex_count_batch0
+$\WWMIv1\shapekey_dispatch_size_y_original_batch1 = 550
+$\WWMIv1\shapekey_vertex_count_batch1 = $shapekey_vertex_count_batch1
+cs-t0 = ResourceShapeKeyVertexIdBuffer
+cs-t1 = ResourceShapeKeyVertexOffsetBuffer
+cs-u6 = ResourceShapeKeyCBRW
+run = CommandList\WWMIv1\LoadShapeKeysBatch
+
+[TextureOverrideShapeKeyLoaderCallback]
+hash = 3c20751d
+match_priority = 0
+if $mod_enabled
+    if cs == 3381.3333 && ResourceMergedSkeleton !== null
+        handling = skip
+        run = CommandListSetupShapeKeysBatch
+        run = CommandListLoadShapeKeysBatch
+    endif
+endif
+
+[CommandListMultiplyShapeKeys]
+$\WWMIv1\custom_vertex_count = $mesh_vertex_count
+run = CustomShader\WWMIv1\ShapeKeyMultiplier
+
+[TextureOverrideShapeKeyMultiplierCallback]
+hash = 3c20751d
+match_priority = 0
+if $mod_enabled
+    if cs == 3381.4444 && ResourceMergedSkeleton !== null
+        handling = skip
+        run = CommandListMultiplyShapeKeys
+    endif
+endif
+
+; Resources: Shape Keys Override -------------------------
+
+[ResourceShapeKeyCBRW]
+type = RWBuffer
+format = R32G32B32A32_UINT
+array = 66
+
+[ResourceCustomShapeKeyValuesRW]
+type = RWBuffer
+format = R32G32B32A32_FLOAT
+array = 64
+
+; Resources: Skeleton Override -------------------------
+
+[ResourceMergedSkeleton]
+
+[ResourceMergedSkeletonRW]
+type = RWBuffer
+format = R32G32B32A32_FLOAT
+array = 1536
+
+[ResourceExtraMergedSkeleton]
+
+[ResourceExtraMergedSkeletonRW]
+type = RWBuffer
+format = R32G32B32A32_FLOAT
+array = 1536
+
+; Resources: Buffers -------------------------
+
+[ResourceBypassVB0]
+
+[ResourceIndexBuffer]
+type = Buffer
+format = DXGI_FORMAT_R32_UINT
+stride = 12
+filename = Meshes/Index.buf
+
+[ResourcePositionBuffer]
+type = Buffer
+format = DXGI_FORMAT_R32G32B32_FLOAT
+stride = 12
+filename = Meshes/Position.buf
+
+[ResourceBlendBuffer]
+type = Buffer
+format = DXGI_FORMAT_R8_UINT
+stride = 16
+filename = Meshes/Blend.buf
+
+[ResourceBlendBufferNoStride]
+type = Buffer
+format = DXGI_FORMAT_R8_UINT
+filename = Meshes/Blend.buf
+
+[ResourceVectorBuffer]
+type = Buffer
+format = DXGI_FORMAT_R8G8B8A8_SNORM
+stride = 8
+filename = Meshes/Vector.buf
+
+[ResourceColorBuffer]
+type = Buffer
+format = DXGI_FORMAT_R8G8B8A8_UNORM
+stride = 4
+filename = Meshes/Color.buf
+
+[ResourceTexCoordBuffer]
+type = Buffer
+format = DXGI_FORMAT_R16G16_FLOAT
+stride = 16
+filename = Meshes/TexCoord.buf
+
+[ResourceBlendRemapVertexVGBuffer]
+type = Buffer
+format = DXGI_FORMAT_R16_UINT
+filename = Meshes/BlendRemapVertexVG.buf
+
+[ResourceBlendRemapForwardBuffer]
+type = Buffer
+format = DXGI_FORMAT_R16_UINT
+filename = Meshes/BlendRemapForward.buf
+
+[ResourceBlendRemapReverseBuffer]
+type = Buffer
+format = DXGI_FORMAT_R16_UINT
+filename = Meshes/BlendRemapReverse.buf
+
+[ResourceShapeKeyOffsetBuffer]
+type = Buffer
+format = DXGI_FORMAT_R32G32B32A32_UINT
+stride = 16
+filename = Meshes/ShapeKeyOffset.buf
+
+[ResourceShapeKeyVertexIdBuffer]
+type = Buffer
+format = DXGI_FORMAT_R32_UINT
+stride = 4
+filename = Meshes/ShapeKeyVertexId.buf
+
+[ResourceShapeKeyVertexOffsetBuffer]
+type = Buffer
+format = DXGI_FORMAT_R16_FLOAT
+stride = 2
+filename = Meshes/ShapeKeyVertexOffset.buf
+
+; Autogenerated -------------------------
+
+; This mod.ini was generated by WWMI Tools Blender addon v1.7.3 and requires WWMI v1.0.0+ to function
+
+; XXMI Launcher GameBanana: https://gamebanana.com/tools/17252
+; XXMI Launcher GitHub: https://github.com/SpectrumQT/XXMI-Launcher
+; WWMI Package GitHub: https://github.com/SpectrumQT/WWMI-Package
+; WWMI Tools GameBanana: https://gamebanana.com/tools/17289
+; WWMI Tools GitHub: https://github.com/SpectrumQT/WWMI-Tools
+; AGMG Modding Community Discord: https://discord.com/invite/agmg
+; SHA256 CHECKSUM: a67200faebcd316ed6632ee84885359cf51cbeaebda0c664ab1ac64edcbc35c9

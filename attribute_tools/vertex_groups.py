@@ -986,6 +986,37 @@ class XQFA_OT_SyncExtractUnpack(bpy.types.Operator):
         return prefix
 
     @staticmethod
+    def _strip_common_prefix(name, prefix):
+        """去除名称的公共前缀，名称不以该前缀开头时原样返回"""
+        if prefix and name.startswith(prefix):
+            return name[len(prefix):]
+        return name
+
+    @classmethod
+    def _derive_part_name(cls, mat_name, obj_name, common_prefix):
+        """从材质名推导部位名：去掉公共前缀，再去掉材质名中与活动物体名相同的标识部分"""
+        part = cls._strip_common_prefix(mat_name, common_prefix)
+        end = 0
+        for token in obj_name.split("_"):
+            if not token:
+                continue
+            idx = part.rfind(token)
+            if idx != -1:
+                end = max(end, idx + len(token))
+        if 0 < end < len(part):
+            part = part[end:]
+        return part
+
+    @classmethod
+    def _build_part_name(cls, base_name, obj_name, prefix, part_source):
+        """去掉公共前缀与物体名标识后生成部位名称：与原名称相同则只保留部位名，否则拼接为“原名 部位名”"""
+        base = cls._derive_part_name(base_name, obj_name, prefix)
+        suffix = cls._derive_part_name(part_source, obj_name, prefix)
+        if suffix and base and base != suffix:
+            return f"{base} {suffix}"
+        return suffix or base or base_name
+
+    @staticmethod
     def _count_vertices_per_material(obj):
         """统计每个材质索引对应的唯一顶点数"""
         mesh = obj.data
@@ -1085,11 +1116,8 @@ class XQFA_OT_SyncExtractUnpack(bpy.types.Operator):
         a_mat_verts = self._count_vertices_per_material(obj_a)
         e_mat_verts = self._count_vertices_per_material(obj_e)
 
-        # 查找E材质名的公共前缀并去除
-        e_mat_names = [mat.name for mat in obj_e.data.materials if mat]
-        common_prefix = self._find_common_prefix(e_mat_names)
-
-        # 按顶点数匹配
+        # 先按顶点数匹配出成对的材质
+        pairs = []  # (a_mat, e_mat, e_idx)
         used_e_indices = set()
         for a_idx, a_mat in enumerate(obj_a.data.materials):
             if a_mat is None:
@@ -1100,14 +1128,20 @@ class XQFA_OT_SyncExtractUnpack(bpy.types.Operator):
                     continue
                 e_count = e_mat_verts.get(e_idx, 0)
                 if a_count == e_count and a_count > 0:
-                    # 获取E材质名去除前缀后的后缀
-                    suffix = e_mat.name[len(common_prefix):] if e_mat.name.startswith(common_prefix) else e_mat.name
-                    # 重命名A的材质
-                    a_mat.name = f"{a_mat.name} {suffix}"
-                    # E的对应材质槽直接使用A的材质
-                    obj_e.material_slots[e_idx].material = a_mat
+                    pairs.append((a_mat, e_mat, e_idx))
                     used_e_indices.add(e_idx)
                     break
+
+        # 仅用参与匹配的E材质名计算公共前缀，避免其它无关材质名把前缀截断
+        common_prefix = self._find_common_prefix([e_mat.name for _, e_mat, _ in pairs])
+
+        # 重命名A的材质：去掉公共前缀，与E的部位名保持一致
+        new_names = [self._build_part_name(a_mat.name, obj_e.name, common_prefix, e_mat.name)
+                     for a_mat, e_mat, _ in pairs]
+        for (a_mat, e_mat, e_idx), new_name in zip(pairs, new_names):
+            a_mat.name = new_name
+            # E的对应材质槽直接使用A的材质
+            obj_e.material_slots[e_idx].material = a_mat
 
     # ========== 分离模式 ==========
 
@@ -1122,14 +1156,7 @@ class XQFA_OT_SyncExtractUnpack(bpy.types.Operator):
         # 计算映射名称前缀
         prefix = self._get_mapping_name(active_e.name)
 
-        # 步骤1: 去除E材质名的公共前缀
-        e_mat_names = [mat.name for mat in active_e.data.materials if mat]
-        common_prefix = self._find_common_prefix(e_mat_names)
-        for mat in active_e.data.materials:
-            if mat and mat.name.startswith(common_prefix):
-                mat.name = mat.name[len(common_prefix):]
-
-        # 步骤2: 复制E为F，按材质分离F
+        # 步骤1: 复制E为F，按材质分离F（此时物体名/材质名仍带完整前缀）
         bpy.ops.object.select_all(action='DESELECT')
         active_e.select_set(True)
         context.view_layer.objects.active = active_e
@@ -1144,7 +1171,7 @@ class XQFA_OT_SyncExtractUnpack(bpy.types.Operator):
 
         separated_e_objs = [obj for obj in context.selected_objects if obj.type == 'MESH']
 
-        # 步骤3: 按物体顶点数匹配 A B C 和 分离物体
+        # 步骤2: 按物体顶点数匹配 A B C 和 分离物体
         others_vert_counts = {obj: len(obj.data.vertices) for obj in selected_others}
         matches = []  # (other_obj, sep_obj)
         used_sep = set()
@@ -1158,25 +1185,39 @@ class XQFA_OT_SyncExtractUnpack(bpy.types.Operator):
                     used_sep.add(id(sep_obj))
                     break
 
-        # 处理每对匹配
-        for other_obj, sep_obj in matches:
-            part_name = sep_obj.name  # 如 "Bangs"
+        # 步骤3: 仅用参与匹配的材质名计算公共前缀，避免其它无关材质名把前缀截断
+        matched_mat_names = [sep_obj.data.materials[0].name
+                             for _, sep_obj in matches if sep_obj.data.materials]
+        common_prefix = self._find_common_prefix(matched_mat_names)
+        print(f"[同步提取和解包|分离] 匹配材质: {matched_mat_names} 公共前缀: {common_prefix!r}")
 
-            # 重命名 other 的材质（添加后缀），物体也同时添加后缀重命名
+        # 去除E材质名的公共前缀
+        for mat in active_e.data.materials:
+            if mat:
+                mat.name = self._derive_part_name(mat.name, active_e.name, common_prefix) or mat.name
+
+        # 步骤4: 处理每对匹配
+        for other_obj, sep_obj in matches:
+            # 分离物体与E共用材质数据块，用其材质名推导部位名
+            sep_mat = sep_obj.data.materials[0] if sep_obj.data.materials else None
+            sep_mat_name = sep_mat.name if sep_mat else sep_obj.name
+            part_name = self._derive_part_name(sep_mat_name, active_e.name, common_prefix) or sep_mat_name
+
+            # 重命名 other 的材质（去掉公共前缀后使用部位名），物体也同时添加后缀重命名
             for mat in other_obj.data.materials:
                 if mat:
-                    mat.name = f"{mat.name} {part_name}"
+                    mat.name = self._build_part_name(mat.name, active_e.name, common_prefix, sep_mat_name)
             other_obj.name = f"{other_obj.name} {part_name}"
 
             # E物体的对应材质槽替换为 other 的对应材质
-            for i in range(len(active_e.data.materials)):
-                e_mat = active_e.data.materials[i]
-                if e_mat and e_mat.name == part_name:
-                    if other_obj.data.materials and other_obj.data.materials[0]:
-                        active_e.data.materials[i] = other_obj.data.materials[0]
-                    break
+            if sep_mat is not None:
+                for i in range(len(active_e.data.materials)):
+                    if active_e.data.materials[i] is sep_mat:
+                        if other_obj.data.materials and other_obj.data.materials[0]:
+                            active_e.data.materials[i] = other_obj.data.materials[0]
+                        break
 
-            # 步骤3a: 顶点组匹配重命名 (sep_obj为源, other为目标)
+            # 步骤4a: 顶点组匹配重命名 (sep_obj为源, other为目标)
             vg_mapping_name = prefix + part_name
             bpy.ops.object.select_all(action='DESELECT')
             sep_obj.select_set(True)
@@ -1195,9 +1236,9 @@ class XQFA_OT_SyncExtractUnpack(bpy.types.Operator):
                 except Exception as e:
                     self.report({'WARNING'}, f"形态键匹配重命名失败 ({part_name}): {e}")
 
-        # 步骤4: 不执行名称排序
+        # 步骤5: 不执行名称排序
 
-        # 步骤5: 为 A B C 添加骨架
+        # 步骤6: 为 A B C 添加骨架
         self._add_armature(context, selected_others, active_e)
 
         # 清理临时分离物体

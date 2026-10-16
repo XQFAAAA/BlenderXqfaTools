@@ -345,12 +345,19 @@ class XQFA_OT_create_packed_image(bpy.types.Operator):
         )
 
         # 用指定颜色填充全部像素
+        # default_color 为场景线性颜色，而新建图像默认是 sRGB 色彩空间，
+        # 其像素缓冲区按 sRGB 编码存储，因此写入前需做 Linear→sRGB 编码，
+        # 否则拾色器里选的 7F7F7F 会变成 373737。
         w, h = self.width, self.height
         pixels = np.empty(w * h * 4, dtype=np.float32)
         r, g, b, a = self.default_color
-        pixels[0::4] = r
-        pixels[1::4] = g
-        pixels[2::4] = b
+        srgb = np.array([r, g, b], dtype=np.float32)
+        mask = srgb <= 0.0031308
+        srgb[mask] *= 12.92
+        srgb[~mask] = 1.055 * np.power(srgb[~mask], 1.0 / 2.4) - 0.055
+        pixels[0::4] = srgb[0]
+        pixels[1::4] = srgb[1]
+        pixels[2::4] = srgb[2]
         pixels[3::4] = a
         new_img.pixels.foreach_set(pixels)
 
@@ -404,7 +411,7 @@ class XQFA_OT_create_packed_image(bpy.types.Operator):
         bpy.app.timers.register(_deferred_add_node, first_interval=0.05)
 
         color_hex = "#{:02x}{:02x}{:02x}".format(
-            int(r * 255), int(g * 255), int(b * 255))
+            int(round(srgb[0] * 255)), int(round(srgb[1] * 255)), int(round(srgb[2] * 255)))
         self.report({'INFO'}, f"已创建打包图像 '{name}' ({w}x{h}, 颜色: {color_hex})")
         return {'FINISHED'}
 
@@ -769,6 +776,91 @@ class XQFA_OT_extract_id_masks(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class XQFA_OT_set_image_rgba(bpy.types.Operator):
+    """对活动图像节点按通道设置 RGBA 数值"""
+    bl_idname = "xqfa.set_image_rgba"
+    bl_label = "设置图像RGBA"
+    bl_description = ("对当前活动图像节点按通道写入数值：\n"
+                      "勾选的通道整体设置为指定值，未勾选的通道保持原样，\n"
+                      "直接写入原始数值，不做任何色彩空间转换")
+    bl_options = {'REGISTER', 'UNDO'}
+
+    channels: bpy.props.BoolVectorProperty(
+        name="通道",
+        size=4,
+        default=(False, False, False, False),
+        description="勾选后该通道整体设置为右侧数值，未勾选则保持原样",
+    )
+
+    values: FloatVectorProperty(
+        name="数值",
+        size=4,
+        default=(0.0, 0.0, 0.0, 1.0),
+        min=0.0,
+        max=1.0,
+        description="勾选通道要写入的数值",
+    )
+
+    @classmethod
+    def poll(cls, context):
+        node = context.active_node
+        return (node is not None and
+                node.type == 'TEX_IMAGE' and
+                node.image is not None)
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self, width=260)
+
+    def draw(self, context):
+        layout = self.layout
+        col = layout.column()
+        for i, label in enumerate(("R", "G", "B", "A")):
+            row = col.row(align=True)
+            row.prop(self, "channels", index=i, text=label)
+            sub = row.row()
+            # 未勾选时数值禁用并置灰，无法更改
+            sub.enabled = self.channels[i]
+            sub.prop(self, "values", index=i, text="")
+
+    def execute(self, context):
+        node = context.active_node
+        if not node or node.type != 'TEX_IMAGE' or not node.image:
+            self.report({'ERROR'}, "请先选择一个图像纹理节点")
+            return {'CANCELLED'}
+
+        img = node.image
+        w, h = img.size
+        if w <= 0 or h <= 0:
+            self.report({'ERROR'}, "图像无效")
+            return {'CANCELLED'}
+
+        enabled = [i for i in range(4) if self.channels[i]]
+        if not enabled:
+            self.report({'WARNING'}, "未勾选任何通道，未做修改")
+            return {'CANCELLED'}
+
+        nch = img.channels
+        valid = [i for i in enabled if i < nch]
+        if not valid:
+            self.report({'ERROR'}, "图像不存在所选的通道")
+            return {'CANCELLED'}
+
+        # 读取像素后逐通道整体写入，直接写原始数值，不做色彩空间转换
+        pixels = np.empty(w * h * nch, dtype=np.float32)
+        img.pixels.foreach_get(pixels)
+        for i in valid:
+            pixels[i::nch] = self.values[i]
+        img.pixels.foreach_set(pixels)
+        img.update()
+        # # 生成/打包且无外部文件的图像，重新打包以持久化修改
+        # if img.packed_file is not None and not img.filepath:
+        #     img.pack()
+
+        applied = "/".join("RGBA"[i] for i in valid)
+        self.report({'INFO'}, f"已设置 '{img.name}' 的 {applied} 通道")
+        return {'FINISHED'}
+
+
 class XQFA_OT_external_edit_image(bpy.types.Operator):
     """在图像节点上右键使用外部编辑器打开图片"""
     bl_idname = "xqfa.external_edit_image"
@@ -844,6 +936,7 @@ class XQFA_PT_material_tools(bpy.types.Panel):
         col.operator(XQFA_OT_create_packed_image.bl_idname, icon='ADD')
         col.operator(XQFA_OT_duplicate_packed_image.bl_idname, icon='COPYDOWN')
         col.operator(XQFA_OT_extract_id_masks.bl_idname, icon='FILTER')
+        col.operator(XQFA_OT_set_image_rgba.bl_idname, icon='COLOR')
 
 classes = (
     XQFA_OT_detect_normal_format,
@@ -852,6 +945,7 @@ classes = (
     XQFA_OT_create_packed_image,
     XQFA_OT_duplicate_packed_image,
     XQFA_OT_extract_id_masks,
+    XQFA_OT_set_image_rgba,
     XQFA_OT_external_edit_image,
     XQFA_PT_material_tools,
 )

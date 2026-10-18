@@ -910,6 +910,20 @@ class XQFA_OT_external_edit_image(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class XQFA_OT_toggle_view_transform(bpy.types.Operator):
+    """在渲染色彩管理的视图变换之间切换"""
+    bl_idname = "xqfa.toggle_view_transform"
+    bl_label = "切换视图变换"
+    bl_description = "切换渲染色彩管理的视图变换：在 Standard 与 Raw 之间来回切换"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        view = context.scene.view_settings
+        view.view_transform = 'Standard' if view.view_transform == 'Raw' else 'Raw'
+        self.report({'INFO'}, f"视图变换已切换为 {view.view_transform}")
+        return {'FINISHED'}
+
+
 def draw_external_edit_menu(self, context):
     """在节点编辑器右键菜单中添加外部编辑选项"""
     node = context.active_node
@@ -937,6 +951,7 @@ class XQFA_PT_material_tools(bpy.types.Panel):
         col.operator(XQFA_OT_duplicate_packed_image.bl_idname, icon='COPYDOWN')
         col.operator(XQFA_OT_extract_id_masks.bl_idname, icon='FILTER')
         col.operator(XQFA_OT_set_image_rgba.bl_idname, icon='COLOR')
+        col.operator(XQFA_OT_toggle_view_transform.bl_idname, icon='MOD_TONEMAP')
 
 classes = (
     XQFA_OT_detect_normal_format,
@@ -947,6 +962,7 @@ classes = (
     XQFA_OT_extract_id_masks,
     XQFA_OT_set_image_rgba,
     XQFA_OT_external_edit_image,
+    XQFA_OT_toggle_view_transform,
     XQFA_PT_material_tools,
 )
 

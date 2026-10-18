@@ -1,414 +1,267 @@
 # type: ignore
 import math
-import time
-import bpy
+
 import bmesh
+import blf
+import bpy
+import gpu
+from gpu_extras.batch import batch_for_shader
 
 
-# Blender 5.0+ 移除了 BMLoopUV.select/select_edge，改用 BMLoop.uv_select_vert/uv_select_edge
-# 以下辅助函数兼容两种版本（4.x 的 UV 选择按层存储，5.0+ 全局共享）
+# ---------------------------------------------------------------------------
+# 兼容 Blender 4.x / 5.x 的 UV 顶点选择读取
+# 5.0+ 移除了 BMLoopUV.select，改用 BMLoop.uv_select_vert
+# ---------------------------------------------------------------------------
 
-def uv_vert_selected(loop, uv_layer):
-    """读取UV顶点的选择状态"""
+def _uv_vert_selected(loop, uv_layer):
+    """读取某个 loop 对应的 UV 顶点是否被选中"""
     if hasattr(loop, 'uv_select_vert'):
         return loop.uv_select_vert
     return loop[uv_layer].select
 
 
-def uv_vert_select_set(loop, uv_layer, value):
-    """设置UV顶点的选择状态"""
-    if hasattr(loop, 'uv_select_vert'):
-        loop.uv_select_vert = value
-    else:
-        loop[uv_layer].select = value
+# ---------------------------------------------------------------------------
+# 数据模型：吸附点保存在场景中（随 .blend 保存），全局可用
+# 同一文件内的任意物体、任意 UV 贴图都能使用这些吸附点
+# ---------------------------------------------------------------------------
+
+_PALETTE = (
+    (1.0, 0.5, 0.0, 1.0),
+    (0.2, 0.8, 1.0, 1.0),
+    (0.6, 0.4, 1.0, 1.0),
+    (0.4, 1.0, 0.4, 1.0),
+    (1.0, 0.4, 0.7, 1.0),
+    (1.0, 0.9, 0.2, 1.0),
+)
 
 
-def uv_edge_select_set(loop, uv_layer, value):
-    """设置UV边的选择状态"""
-    if hasattr(loop, 'uv_select_edge'):
-        loop.uv_select_edge = value
-    else:
-        loop[uv_layer].select_edge = value
+class XQFA_UVSnapPoint(bpy.types.PropertyGroup):
+    u: bpy.props.FloatProperty(name="U", default=0.0)
+    v: bpy.props.FloatProperty(name="V", default=0.0)
 
 
-def uv_edge_selected(loop, uv_layer):
-    """读取UV边的选择状态"""
-    if hasattr(loop, 'uv_select_edge'):
-        return loop.uv_select_edge
-    return loop[uv_layer].select_edge
+class XQFA_UVSnapLayer(bpy.types.PropertyGroup):
+    name: bpy.props.StringProperty(name="层名", default="吸附层")
+    color: bpy.props.FloatVectorProperty(
+        name="颜色", subtype='COLOR_GAMMA', size=4,
+        default=(1.0, 0.5, 0.0, 1.0), min=0.0, max=1.0,
+    )
+    enabled: bpy.props.BoolProperty(
+        name="启用", description="是否高亮显示并参与吸附", default=True,
+    )
+    points: bpy.props.CollectionProperty(type=XQFA_UVSnapPoint)
 
 
-def uv_vert_pinned(loop, uv_layer):
-    """读取UV顶点的钉固状态"""
-    if hasattr(loop, 'uv_pin_vert'):
-        return loop.uv_pin_vert
-    return loop[uv_layer].pin_uv
+def _active_layer(scene, create_if_missing=False):
+    """返回当前激活吸附层，索引越界时可选自动新建"""
+    layers = scene.xqfa_uv_snap_layers
+    idx = scene.xqfa_uv_snap_active_layer
+    if 0 <= idx < len(layers):
+        return layers[idx]
+    if create_if_missing:
+        layer = layers.add()
+        layer.name = f"吸附层 {len(layers)}"
+        layer.color = _PALETTE[(len(layers) - 1) % len(_PALETTE)]
+        scene.xqfa_uv_snap_active_layer = len(layers) - 1
+        return layer
+    return None
 
 
-def uv_vert_pin_set(loop, uv_layer, value):
-    """设置UV顶点的钉固状态"""
-    if hasattr(loop, 'uv_pin_vert'):
-        loop.uv_pin_vert = value
-    else:
-        loop[uv_layer].pin_uv = value
+def _add_point(layer, u, v, tol=1e-6):
+    """向层中添加吸附点，重复位置返回 False"""
+    for p in layer.points:
+        if abs(p.u - u) <= tol and abs(p.v - v) <= tol:
+            return False
+    p = layer.points.add()
+    p.u = u
+    p.v = v
+    return True
 
 
-def _select_linked_uv(bm, uv_layer, use_sync=False):
-    """用bmesh API实现UV选择扩展（类似Ctrl+L），避免bpy.ops.uv.select_linked在重合边时卡死"""
-    # 一次遍历：构建UV邻接图 + 收集初始选中节点（跳过隐藏面）
-    adj = {}
-    selected_keys = set()
+def _has_enabled_points(scene):
+    """是否存在可参与吸附的吸附点（用于 poll 判断是否接管 G 键）"""
+    for layer in scene.xqfa_uv_snap_layers:
+        if layer.enabled and len(layer.points):
+            return True
+    return False
+
+
+def _enabled_targets(scene):
+    """所有启用层里的吸附点坐标"""
+    return [
+        (p.u, p.v)
+        for layer in scene.xqfa_uv_snap_layers if layer.enabled
+        for p in layer.points
+    ]
+
+
+def _selected_node_loops(bm, uv_layer, sync):
+    """收集选中 UV 点，按 UV 坐标去重后返回 {坐标: [loop,...]}"""
+    nodes = {}
     for f in bm.faces:
         if f.hide:
             continue
         for l in f.loops:
+            if sync:
+                if not l.vert.select:
+                    continue
+            elif not _uv_vert_selected(l, uv_layer):
+                continue
             uv = l[uv_layer].uv
-            k = (round(uv.x, 6), round(uv.y, 6))
-            is_sel = l.vert.select if use_sync else uv_vert_selected(l, uv_layer)
-            if is_sel:
-                selected_keys.add(k)
-            ln = l.link_loop_next
-            uv2 = ln[uv_layer].uv
-            k2 = (round(uv2.x, 6), round(uv2.y, 6))
-            if k not in adj:
-                adj[k] = set()
-            adj[k].add(k2)
-            if k2 not in adj:
-                adj[k2] = set()
-            adj[k2].add(k)
-    if not selected_keys:
-        return
-    # BFS扩展选中节点
-    visited = set(selected_keys)
-    queue = list(selected_keys)
-    while queue:
-        cur = queue.pop()
-        for nb in adj.get(cur, ()):
-            if nb not in visited:
-                visited.add(nb)
-                queue.append(nb)
-    # 设置选择状态
+            key = (round(uv.x, 6), round(uv.y, 6))
+            nodes.setdefault(key, []).append(l)
+    return nodes
+
+
+def _collect_selected_uv(bm, uv_layer, sync):
+    """收集选中的 UV 点坐标（按 UV 坐标去重）"""
+    return list(_selected_node_loops(bm, uv_layer, sync).keys())
+
+
+def _loop_uv_records(bm, uv_layer, sync=None):
+    """按 (面序号, 环序号) 记录 UV 坐标。
+
+    - sync 为 True / False：只记录选中的 loop（分别是顶点选择 / UV 选择）
+    - sync 为 None：记录全部 loop（用于取消时还原快照）
+
+    面序号与环序号在 modal 期间保持稳定（拓扑不变），
+    因此可以跨帧用 bm.faces[面序号] 重新定位 loop；
+    BMLoop 引用在每次 update_edit_mesh 后失效，绝不能跨帧缓存。
+    """
+    records = []
+    for fi, f in enumerate(bm.faces):
+        if f.hide and sync is not None:
+            continue
+        for li, l in enumerate(f.loops):
+            if sync is not None:
+                if sync:
+                    if not l.vert.select:
+                        continue
+                elif not _uv_vert_selected(l, uv_layer):
+                    continue
+            uv = l[uv_layer].uv
+            records.append((fi, li, uv.x, uv.y))
+    return records
+
+
+# ---------------------------------------------------------------------------
+# 实时展开相关的读取
+# ---------------------------------------------------------------------------
+
+def _has_live_unwrap_pins(bm, uv_layer):
+    """是否存在足以驱动“实时展开”的固定点（pin）
+
+    Blender 手册明确说明：实时展开需要“固定两个及以上 UV”才会起作用
+    （见 4.5 / 5.2 手册 UV 编辑页的 Pinning 段落：
+    “If you pin two or more UVs, with Live Unwrap on, moving or scaling the
+    pinned UVs will interactively unwrap the model.”）。
+    只有 1 个固定点时展开求解是欠定的（旋转/缩放自由），会来回漂移；
+    而一个固定点都没有时，解算会把整块 UV 从零重算、丢失手动布局。
+    因此这里统计被固定的不同 UV 顶点数，达到 2 个才返回 True。
+    """
+    pinned = set()
     for f in bm.faces:
         if f.hide:
             continue
         for l in f.loops:
-            uv = l[uv_layer].uv
-            k = (round(uv.x, 6), round(uv.y, 6))
-            if k in visited:
-                if use_sync:
-                    l.vert.select = True
-                else:
-                    uv_vert_select_set(l, uv_layer, True)
+            if getattr(l[uv_layer], 'pin_uv', False):
+                uv = l[uv_layer].uv
+                pinned.add((round(uv.x, 6), round(uv.y, 6)))
+                if len(pinned) >= 2:
+                    return True
+    return False
 
 
-# --- 界面面板 (UV 编辑器) ---
-
-class XQFA_PT_UVMiscTools(bpy.types.Panel):
-    bl_label = "UV 工具"
-    bl_idname = "XQFA_PT_uv_misc_tools"
-    bl_space_type = 'IMAGE_EDITOR'
-    bl_region_type = 'UI'
-    bl_category = 'XQFA'
-
-    @classmethod
-    def poll(cls, context):
-        # UV 编辑器中始终显示，不依赖主面板的子面板切换
-        return True
-
-    def draw(self, context):
-        layout = self.layout
-
-        box = layout.box()
-        box.label(text="UV重力布料模拟")
-        box.operator("xqfa.gravity_uv", text="选中孤岛受重力下坠", icon='MOD_CLOTH')
-
-        box = layout.box()
-        box.label(text="UV边链拉直")
-        row = box.row(align=True)
-        op = row.operator("xqfa.straighten_uv_chain", text="水平拉直")
-        op.direction = 'HORIZONTAL'
-        op = row.operator("xqfa.straighten_uv_chain", text="垂直拉直")
-        op.direction = 'VERTICAL'
-
-        box = layout.box()
-        box.label(text="UV边链对齐")
-        row = box.row(align=True)
-        op = row.operator("xqfa.straighten_uv_chain", text="水平对齐")
-        op.direction = 'ALIGN_HORIZONTAL'
-        op = row.operator("xqfa.straighten_uv_chain", text="垂直对齐")
-        op.direction = 'ALIGN_VERTICAL'
+def _uv_scale_per_pixel(view2d):
+    """1 像素对应的 (U, V) 距离，用于像素与 UV 距离的换算"""
+    p0 = view2d.region_to_view(0.0, 0.0)
+    p1 = view2d.region_to_view(1.0, 0.0)
+    p2 = view2d.region_to_view(0.0, 1.0)
+    if p0 is None or p1 is None or p2 is None:
+        return (1e-4, 1e-4)
+    return (max(abs(p1[0] - p0[0]), 1e-9), max(abs(p2[1] - p0[1]), 1e-9))
 
 
-# --- UV重力布料模拟（见 .vibe-coding/算法.md） ---
+def _window_region(area):
+    """取区域的 WINDOW 子区域（面板按钮触发时 context.region 是 UI 区域）"""
+    if area is None:
+        return None
+    for region in area.regions:
+        if region.type == 'WINDOW':
+            return region
+    return None
 
-class XQFA_OT_GravityUV(bpy.types.Operator):
-    """对选中UV孤岛施加重力布料模拟：顶部顶点钉住，其余顶点受重力自然下坠"""
-    bl_idname = "xqfa.gravity_uv"
-    bl_label = "UV重力"
-    bl_description = ("把选中UV孤岛当作布料：顶部顶点钉住，其余顶点受重力下坠，"
-                      "网格边作为弹簧保持UV形状，面三角形面积约束防止拉伸变形与翻转\n"
-                      "(可用 Ctrl+Z 撤销)")
+
+# ---------------------------------------------------------------------------
+# 吸附层管理
+# ---------------------------------------------------------------------------
+
+class XQFA_OT_UVSnapAddLayer(bpy.types.Operator):
+    """新建一个吸附层，用于分层管理吸附点"""
+    bl_idname = "xqfa.uv_snap_add_layer"
+    bl_label = "新建吸附层"
+    bl_description = "新建一个吸附层，用于分层管理吸附点"
     bl_options = {'REGISTER', 'UNDO'}
 
-    steps: bpy.props.IntProperty(
-        name="模拟步数",
-        description="布料下坠模拟的迭代次数，越大越接近最终形态",
-        default=150, min=30, max=500,
-    )
-    pin_ratio: bpy.props.FloatProperty(
-        name="顶部钉住比例",
-        description="孤岛顶部高度占比内的顶点被钉住不动，其余顶点向下坠落",
-        default=0.1, min=0.0, max=0.9, precision=2,
-    )
-    gravity: bpy.props.FloatProperty(
-        name="重力强度",
-        description="重力倍率，越大下坠越明显，同时变形也会更明显",
-        default=1.0, min=0.0, max=5.0, precision=2,
-    )
-    spring_stiffness: bpy.props.FloatProperty(
-        name="弹簧刚度",
-        description="网格边弹簧抵抗拉伸的强度，越高形状保持越好，变形越小",
-        default=1.0, min=0.1, max=1.0, precision=2,
-    )
-    area_stiffness: bpy.props.FloatProperty(
-        name="面积保持",
-        description="保持每个面UV面积不变的约束强度，防止孤岛被拉伸变形（越大面积保持越好）",
-        default=0.8, min=0.0, max=1.0, precision=2,
-    )
-    solver_iters: bpy.props.IntProperty(
-        name="约束迭代",
-        description="每步模拟中弹簧与面积约束的求解次数，越大约束越精确、变形越小，但更慢",
-        default=10, min=1, max=50,
-    )
-
-    def invoke(self, context, event):
-        return context.window_manager.invoke_props_dialog(self, width=320)
-
     def execute(self, context):
-        obj = context.active_object
-        bm = bmesh.from_edit_mesh(obj.data)
-
-        uv_layer = bm.loops.layers.uv.active
-        if uv_layer is None:
-            self.report({'WARNING'}, "当前物体没有UV层")
-            return {'CANCELLED'}
-
-        # 先扩展选择到整个孤岛（类似Ctrl+L），只需选中一个顶点即可操作整个孤岛
-        _select_linked_uv(bm, uv_layer, context.scene.tool_settings.use_uv_select_sync)
-
-        # --- 收集选中loop（即当前孤岛），同步模式回退读取网格顶点选择 ---
-        sel_loops = []
-        island_faces = set()
-        for f in bm.faces:
-            if f.hide:
-                continue
-            for l in f.loops:
-                if uv_vert_selected(l, uv_layer):
-                    sel_loops.append(l)
-                    island_faces.add(f)
-        if not sel_loops and context.scene.tool_settings.use_uv_select_sync:
-            for f in bm.faces:
-                if f.hide:
-                    continue
-                for l in f.loops:
-                    if l.vert.select:
-                        sel_loops.append(l)
-                        island_faces.add(f)
-        if not sel_loops:
-            self.report({'WARNING'}, "请在UV编辑器中选择一个UV孤岛")
-            return {'CANCELLED'}
-
-        # --- UV节点表：坐标相同（容差内）视为同一节点 ---
-        node_pos = {}          # 节点id -> (u, v)
-        node_key_map = {}      # (round(u,6), round(v,6)) -> 节点id
-        loop_node = {}         # loop -> 节点id
-
-        def get_node(u, v):
-            key = (round(u, 6), round(v, 6))
-            if key not in node_key_map:
-                nid = len(node_pos)
-                node_key_map[key] = nid
-                node_pos[nid] = (u, v)
-            return node_key_map[key]
-
-        for l in sel_loops:
-            loop_node[l] = get_node(l[uv_layer].uv.x, l[uv_layer].uv.y)
-
-        # --- 弹簧：网格边 + 面内所有顶点两两相连（防止UV翻转） ---
-        springs = {}           # (min节点, max节点) -> (a, b, 原长)
-
-        def add_spring(a, b):
-            key = (min(a, b), max(a, b))
-            if a == b or key in springs:
-                return
-            ua, va = node_pos[a]
-            ub, vb = node_pos[b]
-            springs[key] = (a, b, math.hypot(ub - ua, vb - va))
-
-        # 每个面内部两两建弹簧：三角形即三条边，四边形多两条对角线，阻止面翻转
-        for f in island_faces:
-            fnodes = [loop_node[l] for l in f.loops if l in loop_node]
-            for i in range(len(fnodes)):
-                for j in range(i + 1, len(fnodes)):
-                    add_spring(fnodes[i], fnodes[j])
-
-        # 边界边：选中loop与其下一条loop若都在选中区，补一条弹簧
-        for l in sel_loops:
-            ln = l.link_loop_next
-            if ln in loop_node:
-                add_spring(loop_node[l], loop_node[ln])
-
-        if not springs:
-            self.report({'WARNING'}, "选中的UV没有可用的边连接")
-            return {'CANCELLED'}
-        spring_list = list(springs.values())
-
-        # --- 面积约束表：每个完整选中的面扇形三角化，记录三角形原始双倍面积 ---
-        # 求解时把每个三角形的双倍面积拉回原值，从而保持面的UV面积并防止翻转
-        tri_list = []   # (n0, n1, n2, 原始双倍面积)
-        for f in island_faces:
-            fnodes = [loop_node[l] for l in f.loops if l in loop_node]
-            if len(fnodes) < 3 or len(fnodes) != len(f.loops):
-                continue   # 只约束完全被选中的面
-            for i in range(1, len(fnodes) - 1):
-                a, b, c = fnodes[0], fnodes[i], fnodes[i + 1]
-                ax, ay = node_pos[a]
-                bx, by = node_pos[b]
-                cx, cy = node_pos[c]
-                da = (bx - ax) * (cy - ay) - (cx - ax) * (by - ay)
-                if abs(da) > 1e-12:
-                    tri_list.append((a, b, c, da))
-
-        # --- 按连通分量求每个孤岛自己的顶部，钉住顶部顶点 ---
-        node_adj = {nid: [] for nid in node_pos}
-        for (a, b, _l0) in spring_list:
-            node_adj[a].append(b)
-            node_adj[b].append(a)
-
-        pinned = set()
-        seen = set()
-        for nid in node_pos:
-            if nid in seen:
-                continue
-            comp = []
-            stack = [nid]
-            seen.add(nid)
-            while stack:
-                cur = stack.pop()
-                comp.append(cur)
-                for nb in node_adj[cur]:
-                    if nb not in seen:
-                        seen.add(nb)
-                        stack.append(nb)
-            vmax = max(node_pos[c][1] for c in comp)
-            vmin = min(node_pos[c][1] for c in comp)
-            h = max(vmax - vmin, 1e-9)
-            for c in comp:
-                if node_pos[c][1] >= vmax - self.pin_ratio * h:
-                    pinned.add(c)
-
-        # --- PBD Verlet 布料模拟 ---
-        all_u = [p[0] for p in node_pos.values()]
-        all_v = [p[1] for p in node_pos.values()]
-        size = max(max(all_u) - min(all_u), max(all_v) - min(all_v), 1e-6)
-        g = 0.004 * size * self.gravity        # 每步重力(UV单位)，默认下坠约4-5%岛高
-        damp = 0.97                            # 速度阻尼
-        stiffness = self.spring_stiffness      # 弹簧刚度
-        a_stiff = self.area_stiffness          # 面积约束刚度
-
-        # 大孤岛自动降低迭代次数，避免卡顿
-        heavy = max(len(node_pos), len(spring_list))
-        if heavy > 120000:
-            steps, solver_iters = 60, 1
-        elif heavy > 40000:
-            steps, solver_iters = 100, 2
-        else:
-            steps, solver_iters = self.steps, self.solver_iters
-
-        orig = dict(node_pos)
-        prev = dict(node_pos)
-        pos = dict(node_pos)
-
-        for _step in range(steps):
-            # 重力 + 惯性（Verlet积分）
-            new_pos = {}
-            for nid, (u, v) in pos.items():
-                if nid in pinned:
-                    new_pos[nid] = orig[nid]
-                    continue
-                vx = (u - prev[nid][0]) * damp
-                vy = (v - prev[nid][1]) * damp
-                new_pos[nid] = (u + vx, v + vy - g)
-            # 弹簧约束 + 面积约束求解（保持UV形状，防止拉伸变形与翻转）
-            for _it in range(solver_iters):
-                for (a, b, l0) in spring_list:
-                    ua, va = new_pos[a]
-                    ub, vb = new_pos[b]
-                    dx = ub - ua
-                    dy = vb - va
-                    d = math.hypot(dx, dy)
-                    if d < 1e-9:
-                        continue
-                    move = (d - l0) / d * 0.5 * stiffness
-                    new_pos[a] = (ua + dx * move, va + dy * move)
-                    new_pos[b] = (ub - dx * move, vb - dy * move)
-                if a_stiff > 0 and tri_list:
-                    for (n0, n1, n2, da0) in tri_list:
-                        ax, ay = new_pos[n0]
-                        bx, by = new_pos[n1]
-                        cx, cy = new_pos[n2]
-                        # 双倍面积的梯度投影：把当前面积拉回原始值
-                        g_a = (by - cy, cx - bx)
-                        g_b = (cy - ay, ax - cx)
-                        g_c = (ay - by, bx - ax)
-                        denom = (g_a[0] * g_a[0] + g_a[1] * g_a[1]
-                                 + g_b[0] * g_b[0] + g_b[1] * g_b[1]
-                                 + g_c[0] * g_c[0] + g_c[1] * g_c[1])
-                        if denom < 1e-12:
-                            continue
-                        da = (bx - ax) * (cy - ay) - (cx - ax) * (by - ay)
-                        lam = (da - da0) / denom * a_stiff
-                        new_pos[n0] = (ax - lam * g_a[0], ay - lam * g_a[1])
-                        new_pos[n1] = (bx - lam * g_b[0], by - lam * g_b[1])
-                        new_pos[n2] = (cx - lam * g_c[0], cy - lam * g_c[1])
-            for nid in pinned:
-                new_pos[nid] = orig[nid]
-            prev, pos = pos, new_pos
-
-        # --- 写回UV坐标 ---
-        for l in sel_loops:
-            l[uv_layer].uv = pos[loop_node[l]]
-
-        bmesh.update_edit_mesh(obj.data)
-        self.report({'INFO'}, f"UV重力完成: {len(node_pos)}个顶点, {len(spring_list)}条弹簧, "
-                              f"{len(tri_list)}个面积三角形, {steps}步")
+        scene = context.scene
+        layers = scene.xqfa_uv_snap_layers
+        layer = layers.add()
+        layer.name = f"吸附层 {len(layers)}"
+        layer.color = _PALETTE[(len(layers) - 1) % len(_PALETTE)]
+        scene.xqfa_uv_snap_active_layer = len(layers) - 1
         return {'FINISHED'}
 
 
-# --- UV边链拉直：把选中单向相连的UV边链拉直为水平/垂直线 ---
-
-class XQFA_OT_StraightenUVChain(bpy.types.Operator):
-    """把选中的一串UV边拉直为水平线或垂直线，锚点不动、点间距离不变"""
-    bl_idname = "xqfa.straighten_uv_chain"
-    bl_label = "UV边链拉直"
-    bl_description = ("把选中的一条UV边链拉直或对齐：\n"
-                      "垂直拉直：所有点落到同一条垂直线上，最上方点保持不动，距离保持\n"
-                      "水平拉直：所有点落到同一条水平线上，最左边点保持不动，距离保持\n"
-                      "垂直对齐：所有点的U坐标统一为锚点U坐标，V坐标不变\n"
-                      "水平对齐：所有点的V坐标统一为锚点V坐标，U坐标不变")
+class XQFA_OT_UVSnapRemoveLayer(bpy.types.Operator):
+    """删除当前吸附层及其所有吸附点"""
+    bl_idname = "xqfa.uv_snap_remove_layer"
+    bl_label = "删除吸附层"
+    bl_description = "删除当前吸附层及其所有吸附点"
     bl_options = {'REGISTER', 'UNDO'}
 
-    direction: bpy.props.EnumProperty(
-        name="方向",
-        description="拉直或对齐的方向",
-        items=[
-            ('HORIZONTAL', "水平拉直", "拉直为一条水平线，最左边点保持不动，距离保持"),
-            ('VERTICAL', "垂直拉直", "拉直为一条垂直线，最上方点保持不动，距离保持"),
-            ('ALIGN_HORIZONTAL', "水平对齐", "所有点的V坐标统一，U坐标不变"),
-            ('ALIGN_VERTICAL', "垂直对齐", "所有点的U坐标统一，V坐标不变"),
-        ],
-        default='VERTICAL',
-    )
+    def execute(self, context):
+        scene = context.scene
+        layers = scene.xqfa_uv_snap_layers
+        idx = scene.xqfa_uv_snap_active_layer
+        if not (0 <= idx < len(layers)):
+            self.report({'WARNING'}, "没有可删除的吸附层")
+            return {'CANCELLED'}
+        name = layers[idx].name
+        layers.remove(idx)
+        scene.xqfa_uv_snap_active_layer = max(0, min(idx, len(layers) - 1))
+        self.report({'INFO'}, f"已删除吸附层“{name}”")
+        return {'FINISHED'}
+
+
+class XQFA_OT_UVSnapClearLayer(bpy.types.Operator):
+    """删除当前吸附层中的所有吸附点（保留层）"""
+    bl_idname = "xqfa.uv_snap_clear_layer"
+    bl_label = "清空当前层"
+    bl_description = "删除当前吸附层中的所有吸附点（保留层）"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        layer = _active_layer(context.scene)
+        if layer is None:
+            self.report({'WARNING'}, "没有可清空的吸附层")
+            return {'CANCELLED'}
+        count = len(layer.points)
+        layer.points.clear()
+        self.report({'INFO'}, f"已清空 {count} 个吸附点")
+        return {'FINISHED'}
+
+
+# ---------------------------------------------------------------------------
+# 添加吸附点
+# ---------------------------------------------------------------------------
+
+class XQFA_OT_UVSnapAddSelected(bpy.types.Operator):
+    """把 UV 编辑器中选中的 UV 点位置添加为当前层的吸附点"""
+    bl_idname = "xqfa.uv_snap_add_selected"
+    bl_label = "从选中UV点添加"
+    bl_description = "把 UV 编辑器中选中的 UV 点位置添加为当前层的吸附点"
+    bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
     def poll(cls, context):
@@ -418,190 +271,510 @@ class XQFA_OT_StraightenUVChain(bpy.types.Operator):
     def execute(self, context):
         obj = context.active_object
         bm = bmesh.from_edit_mesh(obj.data)
-
         uv_layer = bm.loops.layers.uv.active
         if uv_layer is None:
             self.report({'WARNING'}, "当前物体没有UV层")
             return {'CANCELLED'}
 
-        # --- UV节点表 ---
-        node_pos = {}          # 节点id -> (u, v)
-        node_key_map = {}      # (round(u,6), round(v,6)) -> 节点id
-        loop_node = {}         # loop -> 节点id
-
-        def get_node(u, v):
-            key = (round(u, 6), round(v, 6))
-            if key not in node_key_map:
-                nid = len(node_pos)
-                node_key_map[key] = nid
-                node_pos[nid] = (u, v)
-            return node_key_map[key]
-
-        # --- 收集选中UV边（跳过隐藏面）---
-        # 优先使用UV边选择状态（边模式，精确到每条边），回退到顶点选择（顶点模式）
-        edges = set()
-        for f in bm.faces:
-            if f.hide:
-                continue
-            for l in f.loops:
-                if uv_edge_selected(l, uv_layer):
-                    ln = l.link_loop_next
-                    a = get_node(l[uv_layer].uv.x, l[uv_layer].uv.y)
-                    b = get_node(ln[uv_layer].uv.x, ln[uv_layer].uv.y)
-                    if a != b:
-                        edges.add((min(a, b), max(a, b)))
-                    loop_node[l] = a
-                    loop_node[ln] = b
-
-        if not edges:
-            # 回退到顶点选择模式
-            sel_loops = []
-            for f in bm.faces:
-                if f.hide:
-                    continue
-                for l in f.loops:
-                    if uv_vert_selected(l, uv_layer):
-                        sel_loops.append(l)
-            if not sel_loops and context.scene.tool_settings.use_uv_select_sync:
-                for f in bm.faces:
-                    if f.hide:
-                        continue
-                    for l in f.loops:
-                        if l.vert.select:
-                            sel_loops.append(l)
-            if not sel_loops:
-                self.report({'WARNING'}, "请在UV编辑器中选择一串UV边")
-                return {'CANCELLED'}
-
-            for l in sel_loops:
-                loop_node[l] = get_node(l[uv_layer].uv.x, l[uv_layer].uv.y)
-
-            for l in sel_loops:
-                ln = l.link_loop_next
-                if ln in loop_node:
-                    a, b = loop_node[l], loop_node[ln]
-                    edges.add((min(a, b), max(a, b)))
-
-        if not edges:
-            self.report({'WARNING'}, "选中的UV顶点之间没有相连的边")
+        sync = context.scene.tool_settings.use_uv_select_sync
+        coords = _collect_selected_uv(bm, uv_layer, sync)
+        if not coords:
+            self.report({'WARNING'}, "没有选中的UV点")
             return {'CANCELLED'}
 
-        # sel_loops 用于后续钉固和写回UV
-        sel_loops = list(loop_node.keys())
-
-        # --- 检查是否为单向相连的开放边链（单一连通、无分支、无闭合环） ---
-        chain_nodes = set()
-        for a, b in edges:
-            chain_nodes.add(a)
-            chain_nodes.add(b)
-        if len(chain_nodes) != len(node_pos):
-            self.report({'WARNING'}, "选中的UV包含未相连的顶点，请只选中一条边链")
-            return {'CANCELLED'}
-
-        adj = {nid: [] for nid in chain_nodes}
-        for a, b in edges:
-            adj[a].append(b)
-            adj[b].append(a)
-        if any(len(adj[n]) > 2 for n in adj):
-            self.report({'WARNING'}, "选中的UV边存在分叉，不是单向相连的边链")
-            return {'CANCELLED'}
-
-        endpoints = [n for n in adj if len(adj[n]) == 1]
-        if len(endpoints) != 2:
-            self.report({'WARNING'}, "选中的UV边链是闭合环，请选择一条开放的边链")
-            return {'CANCELLED'}
-
-        # 连通性：从一端出发必须能走完整条链
-        seen = set()
-        stack = [endpoints[0]]
-        while stack:
-            cur = stack.pop()
-            if cur in seen:
-                continue
-            seen.add(cur)
-            stack.extend(adj[cur])
-        if len(seen) != len(chain_nodes):
-            self.report({'WARNING'}, "选中的UV边链不连续，请只选中一条边链")
-            return {'CANCELLED'}
-
-        # --- 沿链从一端走到另一端，得到链顺序与累计距离 ---
-        order = []
-        cur, prev = endpoints[0], -1
-        while True:
-            order.append(cur)
-            nxt = [n for n in adj[cur] if n != prev]
-            if not nxt:
-                break
-            cur, prev = nxt[0], cur
-
-        cumdist = {order[0]: 0.0}
-        for i in range(1, len(order)):
-            a, b = order[i - 1], order[i]
-            ua, va = node_pos[a]
-            ub, vb = node_pos[b]
-            cumdist[b] = cumdist[a] + math.hypot(ub - ua, vb - va)
-
-        # --- 位置计算 ---
-        if self.direction == 'VERTICAL':
-            # 拉直：最上方点为锚点，其余点沿垂直线向下排布，距离保持
-            anchor = max(chain_nodes, key=lambda n: node_pos[n][1])
-            ax, ay = node_pos[anchor]
-            new_pos = {nid: (ax, ay - abs(cumdist[nid] - cumdist[anchor]))
-                       for nid in chain_nodes}
-        elif self.direction == 'HORIZONTAL':
-            # 拉直：最左边点为锚点，其余点沿水平线向右排布，距离保持
-            anchor = min(chain_nodes, key=lambda n: node_pos[n][0])
-            ax, ay = node_pos[anchor]
-            new_pos = {nid: (ax + abs(cumdist[nid] - cumdist[anchor]), ay)
-                       for nid in chain_nodes}
-        elif self.direction == 'ALIGN_VERTICAL':
-            # 对齐：所有点的U坐标统一为锚点U，V坐标不变
-            anchor = max(chain_nodes, key=lambda n: node_pos[n][1])
-            ax = node_pos[anchor][0]
-            new_pos = {nid: (ax, node_pos[nid][1]) for nid in chain_nodes}
-        else:  # ALIGN_HORIZONTAL
-            # 对齐：所有点的V坐标统一为锚点V，U坐标不变
-            anchor = min(chain_nodes, key=lambda n: node_pos[n][0])
-            ay = node_pos[anchor][1]
-            new_pos = {nid: (node_pos[nid][0], ay) for nid in chain_nodes}
-
-        # --- 开启实时展开 ---
-        space = context.space_data
-        if space and hasattr(space, 'uv_editor') and hasattr(space.uv_editor, 'use_live_unwrap'):
-            space.uv_editor.use_live_unwrap = True
-
-        # --- 钉固选中顶点（作为 Live Unwrap 的约束） ---
-        for l in sel_loops:
-            uv_vert_pin_set(l, uv_layer, True)
-
-        # --- 写回UV坐标（拉直） ---
-        for l in sel_loops:
-            l[uv_layer].uv = new_pos[loop_node[l]]
-
-        bmesh.update_edit_mesh(obj.data)
-
-        # --- 原地设置位置触发实时展开 ---
-        # Live Unwrap 已开启，通过零位移 translate 触发未钉固部分根据钉固顶点重新展开
-        bpy.ops.transform.translate(value=(0, 0, 0))
-
-        dir_text = {'VERTICAL': '垂直拉直', 'HORIZONTAL': '水平拉直',
-                    'ALIGN_VERTICAL': '垂直对齐', 'ALIGN_HORIZONTAL': '水平对齐'}[self.direction]
-        self.report({'INFO'}, f"UV边链拉直完成: {len(chain_nodes)}个顶点({dir_text}), 已钉固并触发实时展开")
+        layer = _active_layer(context.scene, create_if_missing=True)
+        added = sum(1 for (u, v) in coords if _add_point(layer, u, v))
+        self.report({'INFO'}, f"已添加 {added} 个吸附点（选中 {len(coords)} 个）")
         return {'FINISHED'}
 
 
+# ---------------------------------------------------------------------------
+# 吸附移动（自建 modal）
+#
+# 为什么必须自建 modal：原生 UV Transform 每一帧都用“初始坐标 + 鼠标位移”
+# 绝对重算 UV，任何外部写入下一帧就被覆盖，无法从外部注入吸附；
+# 而“实时展开”的解算器只活在原生 transform 内部（C 层），Python 无入口。
+# 所以这里接管 G 键，自己完成“移动 + 吸附”，并在确认吸附后触发一次实时展开：
+# 先临时关闭「启用吸附」→ 执行一次原生 0 单位移动 → 再恢复开关；
+# 若该原生调用没有产生解算（0 位移本身不会移动任何点，只能靠解算器产生变化），
+# 再退回调用原生解算器 bpy.ops.uv.unwrap()，保证展开一定发生。
+#
+# 坐标来源使用 event.mouse_x / mouse_y（屏幕坐标，与触发区域无关），
+# 因此无论从 G 键还是面板按钮触发都能正确工作。
+# ---------------------------------------------------------------------------
+
+
+class XQFA_OT_UVSnapMove(bpy.types.Operator):
+    """吸附移动：在 UV 编辑器里移动选中的 UV 点，自动磁吸到最近的吸附点"""
+    bl_idname = "xqfa.uv_snap_move"
+    bl_label = "UV 吸附移动"
+    bl_description = ("移动选中的 UV 点，并在吸附距离内磁吸到最近的吸附点；"
+                      "开启实时展开且固定了 2 个以上点时，确认吸附后重算展开")
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        area = getattr(context, 'area', None)
+        if area is None or area.type != 'IMAGE_EDITOR':
+            return False
+        scene = getattr(context, 'scene', None)
+        if scene is None or not scene.xqfa_uv_snap_enabled:
+            return False
+        if not _has_enabled_points(scene):
+            return False
+        obj = getattr(context, 'edit_object', None)
+        return obj is not None and obj.type == 'MESH' and obj.mode == 'EDIT'
+
+    # -- 生命周期 ---------------------------------------------------------
+
+    def invoke(self, context, event):
+        self.area = context.area
+        self.window = context.window
+        self.scene = context.scene
+        self.view_layer = context.view_layer
+        self.region = _window_region(self.area)
+        self.obj = context.edit_object
+        if self.obj is None or self.region is None:
+            return {'CANCELLED'}
+
+        bm = bmesh.from_edit_mesh(self.obj.data)
+        uv_layer = bm.loops.layers.uv.active
+        if uv_layer is None:
+            self.report({'WARNING'}, "当前物体没有UV层")
+            return {'CANCELLED'}
+
+        self.sync = context.scene.tool_settings.use_uv_select_sync
+        self.selection = _loop_uv_records(bm, uv_layer, self.sync)
+        if not self.selection:
+            self.report({'WARNING'}, "没有选中的UV点")
+            return {'CANCELLED'}
+        # 取消时用整网格快照还原（实时展开会把未固定的 UV 一起改动）
+        self.snapshot = _loop_uv_records(bm, uv_layer, None)
+
+        self.live_unwrap = bool(
+            getattr(getattr(context.space_data, 'uv_editor', None),
+                    'use_live_unwrap', False))
+        self.axis = None          # 轴向锁定：None / 'X'(U) / 'Y'(V)
+        self.armed = False        # 首次鼠标移动时重新锚定，避免起点跳变
+        self.mouse_start = (event.mouse_x, event.mouse_y)
+
+        context.window_manager.modal_handler_add(self)
+        self._apply(context, self.mouse_start)
+        return {'RUNNING_MODAL'}
+
+    def modal(self, context, event):
+        if event.type in ('MOUSEMOVE', 'INBETWEEN_MOUSEMOVE'):
+            mouse = (event.mouse_x, event.mouse_y)
+            if not self.armed:
+                self.armed = True
+                self.mouse_start = mouse
+            self._apply(context, mouse)
+            return {'RUNNING_MODAL'}
+
+        if event.type in ('LEFTMOUSE', 'RETURN', 'SPACE') and event.value == 'PRESS':
+            self._finish_unwrap(context)
+            return {'FINISHED'}
+
+        if event.type in ('RIGHTMOUSE', 'ESC'):
+            self._restore()
+            return {'CANCELLED'}
+
+        if event.type in ('X', 'Y') and event.value == 'PRESS':
+            self.axis = None if self.axis == event.type else event.type
+            self._apply(context, (event.mouse_x, event.mouse_y))
+            return {'RUNNING_MODAL'}
+
+        return {'RUNNING_MODAL'}
+
+    # -- 内部实现 ---------------------------------------------------------
+
+    def _apply(self, context, mouse):
+        obj = self.obj
+        if obj is None or obj.mode != 'EDIT':
+            return
+
+        dx = mouse[0] - self.mouse_start[0]
+        dy = mouse[1] - self.mouse_start[1]
+        if self.axis == 'X':
+            dy = 0.0
+        elif self.axis == 'Y':
+            dx = 0.0
+
+        bm = bmesh.from_edit_mesh(obj.data)
+        bm.faces.ensure_lookup_table()
+        uv_layer = bm.loops.layers.uv.active
+        if uv_layer is None:
+            return
+
+        sx, sy = _uv_scale_per_pixel(self.region.view2d)
+        sx = max(sx, 1e-9)
+        sy = max(sy, 1e-9)
+
+        # 1) 由「初始坐标 + 鼠标位移」重算临时位置（绝对重算，不累积误差）
+        tmp = [(iu + dx * sx, iv + dy * sy) for (_fi, _li, iu, iv) in self.selection]
+
+        # 2) 磁吸：在「所有选中点 × 所有吸附点」中找像素距离最近的一对
+        targets = _enabled_targets(self.scene)
+        off_u = off_v = 0.0
+        best = None
+        for (u, v) in tmp:
+            for (tu, tv) in targets:
+                ddx = (tu - u) / sx
+                ddy = (tv - v) / sy
+                d2 = ddx * ddx + ddy * ddy
+                if best is None or d2 < best[0]:
+                    best = (d2, tu - u, tv - v)
+        thr = self.scene.xqfa_uv_snap_distance
+        if best is not None and best[0] <= thr * thr:
+            off_u = best[1]
+            off_v = best[2]
+
+        # 3) 写回选中 UV 点
+        face_count = len(bm.faces)
+        for (fi, li, _iu, _iv), (u, v) in zip(self.selection, tmp):
+            if fi >= face_count:
+                continue
+            for k, l in enumerate(bm.faces[fi].loops):
+                if k == li:
+                    luv = l[uv_layer].uv
+                    luv.x = u + off_u
+                    luv.y = v + off_v
+                    break
+
+        # 4) 写回并刷新（实时展开在确认吸附时统一解算，见 _finish_unwrap）
+        bmesh.update_edit_mesh(obj.data)
+        if self.area is not None:
+            self.area.tag_redraw()
+
+    def _finish_unwrap(self, context):
+        """确认吸附后触发一次实时展开
+
+        做法：临时关闭「启用吸附」→ 执行一次原生 0 单位移动 → 恢复开关。
+        0 位移本身不会移动任何 UV，只能靠原生 transform 内部的实时展开
+        解算器产生变化；若这次原生调用没能改变 UV，再退回调用原生解算器
+        bpy.ops.uv.unwrap()，确保展开一定发生。
+
+        仅在 UV 编辑器开启实时展开、且固定点 ≥2 时执行
+        （与 Blender 手册的实时展开前提一致：固定两个及以上 UV 才有意义）。
+        """
+        if not self.live_unwrap:
+            return
+        obj = self.obj
+        if obj is None or obj.mode != 'EDIT':
+            return
+        bm = bmesh.from_edit_mesh(obj.data)
+        uv_layer = bm.loops.layers.uv.active
+        if uv_layer is None or not _has_live_unwrap_pins(bm, uv_layer):
+            return
+
+        before = _loop_uv_records(bm, uv_layer, None)
+
+        # 1) 临时关闭「启用吸附」，让后续走原生路径
+        scene = self.scene
+        was_enabled = scene.xqfa_uv_snap_enabled
+        scene.xqfa_uv_snap_enabled = False
+
+        # 2) 原生移动 0 个单位
+        resolved = False
+        try:
+            with context.temp_override(
+                window=self.window, area=self.area, region=self.region,
+                scene=self.scene, view_layer=self.view_layer,
+            ):
+                result = bpy.ops.transform.translate(value=(0.0, 0.0, 0.0))
+            resolved = 'FINISHED' in result
+        except Exception:
+            resolved = False
+        finally:
+            # 3) 恢复「启用吸附」
+            scene.xqfa_uv_snap_enabled = was_enabled
+
+        # 位移为 0 时 UV 只会因解算器而改变，据此判断原生解算是否真的跑了
+        if resolved:
+            bm2 = bmesh.from_edit_mesh(obj.data)
+            uv2 = bm2.loops.layers.uv.active
+            resolved = uv2 is not None and _loop_uv_records(bm2, uv2, None) != before
+
+        if not resolved:
+            self._run_unwrap(context)
+
+    def _run_unwrap(self, context):
+        """在正确的上下文里调用 UV 编辑器的「实时展开」解算器"""
+        try:
+            with context.temp_override(
+                window=self.window,
+                area=self.area,
+                region=self.region,
+                scene=self.scene,
+                view_layer=self.view_layer,
+            ):
+                bpy.ops.uv.unwrap()
+        except Exception:
+            pass
+
+    def _restore(self):
+        """取消：还原整网格 UV 到进入 modal 时的状态"""
+        obj = self.obj
+        if obj is None:
+            return
+        bm = bmesh.from_edit_mesh(obj.data)
+        bm.faces.ensure_lookup_table()
+        uv_layer = bm.loops.layers.uv.active
+        if uv_layer is not None:
+            face_count = len(bm.faces)
+            for (fi, li, iu, iv) in self.snapshot:
+                if fi >= face_count:
+                    continue
+                for k, l in enumerate(bm.faces[fi].loops):
+                    if k == li:
+                        luv = l[uv_layer].uv
+                        luv.x = iu
+                        luv.y = iv
+                        break
+        bmesh.update_edit_mesh(obj.data)
+        if self.area is not None:
+            self.area.tag_redraw()
+
+
+# ---------------------------------------------------------------------------
+# 吸附点高亮叠加显示（在 UV 编辑器中绘制）
+# ---------------------------------------------------------------------------
+
+_draw_handle = None
+
+
+def _append_circle(coords, indices, cx, cy, radius, segments=14):
+    """向顶点/索引列表追加一个实心圆（三角扇形）"""
+    base = len(coords)
+    coords.append((cx, cy))
+    for i in range(segments):
+        ang = (2.0 * math.pi * i) / segments
+        coords.append((cx + radius * math.cos(ang), cy + radius * math.sin(ang)))
+    for i in range(segments):
+        nxt = (i + 1) % segments
+        indices.append((base, base + 1 + i, base + 1 + nxt))
+
+
+def _draw_uv_snap_overlay():
+    context = bpy.context
+    scene = getattr(context, 'scene', None)
+    region = getattr(context, 'region', None)
+    space = getattr(context, 'space_data', None)
+    view2d = getattr(region, 'view2d', None)
+
+    if scene is None or not scene.xqfa_uv_snap_show_overlay:
+        return
+
+    layers = scene.xqfa_uv_snap_layers
+    if not len(layers):
+        return
+
+    if region is None or space is None or getattr(space, 'type', '') != 'IMAGE_EDITOR':
+        return
+    if getattr(space, 'mode', 'UV') != 'UV':
+        return
+
+    if view2d is None:
+        return
+
+    radius = scene.xqfa_uv_snap_marker_size
+    show_names = scene.xqfa_uv_snap_show_names
+
+    gpu.state.blend_set('ALPHA')
+    try:
+        shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+        for layer in layers:
+            if not layer.enabled or not len(layer.points):
+                continue
+
+            coords = []
+            indices = []
+            labels = []
+            for p in layer.points:
+                pos = view2d.view_to_region(p.u, p.v, clip=False)
+                if pos is None:
+                    continue
+                px, py = pos[0], pos[1]
+                _append_circle(coords, indices, px, py, radius)
+                if show_names:
+                    labels.append((px, py))
+
+            if indices:
+                batch = batch_for_shader(shader, 'TRIS', {"pos": coords}, indices=indices)
+                shader.uniform_float("color", tuple(layer.color))
+                batch.draw(shader)
+
+            if labels:
+                font_id = 0
+                blf.size(font_id, 14)
+                blf.color(font_id, layer.color[0], layer.color[1], layer.color[2], 1.0)
+                off = radius + 3.0
+                for px, py in labels:
+                    blf.position(font_id, px + off, py - 5.0, 0)
+                    blf.draw(font_id, layer.name)
+    finally:
+        gpu.state.blend_set('NONE')
+
+
+# ---------------------------------------------------------------------------
+# 界面
+# ---------------------------------------------------------------------------
+
+class XQFA_UL_UVSnapLayers(bpy.types.UIList):
+    def draw_item(self, context, layout, data, item, icon, active_data, active_propname):
+        row = layout.row(align=True)
+        row.prop(item, "enabled", text="")
+        row.prop(item, "color", text="")
+        row.prop(item, "name", text="", emboss=False)
+        row.label(text=str(len(item.points)))
+
+
+class XQFA_PT_UVSnapPoints(bpy.types.Panel):
+    bl_label = "UV 吸附点"
+    bl_idname = "XQFA_PT_uv_snap_points"
+    bl_space_type = 'IMAGE_EDITOR'
+    bl_region_type = 'UI'
+    bl_category = 'XQFA'
+
+    def draw(self, context):
+        layout = self.layout
+        scene = context.scene
+
+        col = layout.column(align=True)
+        col.prop(scene, "xqfa_uv_snap_show_overlay", text="高亮显示吸附点")
+        row = col.row(align=True)
+        row.prop(scene, "xqfa_uv_snap_show_names", text="显示层名")
+        row.prop(scene, "xqfa_uv_snap_marker_size", text="大小")
+
+        row = layout.row()
+        row.template_list(
+            "XQFA_UL_UVSnapLayers", "",
+            scene, "xqfa_uv_snap_layers",
+            scene, "xqfa_uv_snap_active_layer",
+            rows=4,
+        )
+        col2 = row.column(align=True)
+        col2.operator(XQFA_OT_UVSnapAddLayer.bl_idname, icon='ADD', text="")
+        col2.operator(XQFA_OT_UVSnapRemoveLayer.bl_idname, icon='REMOVE', text="")
+        col2.separator()
+        col2.operator(XQFA_OT_UVSnapClearLayer.bl_idname, icon='TRASH', text="")
+
+        layout.operator(XQFA_OT_UVSnapAddSelected.bl_idname, text="指定")
+
+        box = layout.box()
+        box.label(text="吸附移动")
+        row = box.row(align=True)
+        row.prop(
+            scene, "xqfa_uv_snap_enabled",
+            text="启用吸附", toggle=True, icon='SNAP_ON',
+        )
+        row.prop(scene, "xqfa_uv_snap_distance", text="距离")
+        box.operator(XQFA_OT_UVSnapMove.bl_idname, text="吸附移动（G）")
+
+# ---------------------------------------------------------------------------
+# 注册
+# ---------------------------------------------------------------------------
+
 classes = (
-    XQFA_PT_UVMiscTools,
-    XQFA_OT_GravityUV,
-    XQFA_OT_StraightenUVChain,
+    XQFA_UVSnapPoint,
+    XQFA_UVSnapLayer,
+    XQFA_OT_UVSnapAddLayer,
+    XQFA_OT_UVSnapRemoveLayer,
+    XQFA_OT_UVSnapClearLayer,
+    XQFA_OT_UVSnapAddSelected,
+    XQFA_OT_UVSnapMove,
+    XQFA_UL_UVSnapLayers,
+    XQFA_PT_UVSnapPoints,
 )
+
+_addon_keymaps = []
+
+
+def _register_keymaps():
+    """把「吸附移动」绑到 UV 编辑器的 G 键
+
+    UV 编辑器的原生键位表本身 space_type 就是 EMPTY，必须保持一致，
+    否则会创建一个永远不会被查询到的孤儿键位表。
+    本操作符的 poll 会在「未开启吸附 / 没有吸附点 / 非编辑模式」时返回 False，
+    此时 Blender 会继续匹配下一个键位项，即原生 transform.translate。
+    """
+    wm = getattr(bpy.context, 'window_manager', None)
+    if wm is None:
+        return
+    kc = getattr(wm, 'keyconfigs', None)
+    addon_kc = getattr(kc, 'addon', None) if kc is not None else None
+    if addon_kc is None:
+        return
+    km = addon_kc.keymaps.new(name='UV Editor', space_type='EMPTY')
+    kmi = km.keymap_items.new(XQFA_OT_UVSnapMove.bl_idname, 'G', 'PRESS')
+    _addon_keymaps.append((km, kmi))
+
+
+def _unregister_keymaps():
+    for km, kmi in _addon_keymaps:
+        try:
+            km.keymap_items.remove(kmi)
+        except Exception:
+            pass
+    _addon_keymaps.clear()
 
 
 def register():
     for cls in classes:
         bpy.utils.register_class(cls)
 
+    # 场景级属性：数据随 .blend 保存，同一文件内所有物体/UV 共享
+    bpy.types.Scene.xqfa_uv_snap_layers = bpy.props.CollectionProperty(type=XQFA_UVSnapLayer)
+    bpy.types.Scene.xqfa_uv_snap_active_layer = bpy.props.IntProperty(default=0)
+    bpy.types.Scene.xqfa_uv_snap_show_overlay = bpy.props.BoolProperty(
+        name="高亮显示吸附点", default=True,
+    )
+    bpy.types.Scene.xqfa_uv_snap_show_names = bpy.props.BoolProperty(
+        name="显示层名", default=True,
+    )
+    bpy.types.Scene.xqfa_uv_snap_marker_size = bpy.props.FloatProperty(
+        name="标记大小", default=6.0, min=2.0, max=30.0,
+    )
+    bpy.types.Scene.xqfa_uv_snap_enabled = bpy.props.BoolProperty(
+        name="启用吸附",
+        description="开启后，UV 编辑器中的 G 键为吸附移动；关闭时回退为原生移动",
+        default=False,
+    )
+    bpy.types.Scene.xqfa_uv_snap_distance = bpy.props.FloatProperty(
+        name="吸附距离",
+        description="移动时距离吸附点多少像素以内即触发吸附",
+        default=12.0, min=1.0, max=100.0,
+    )
+
+    global _draw_handle
+    if _draw_handle is None:
+        _draw_handle = bpy.types.SpaceImageEditor.draw_handler_add(
+            _draw_uv_snap_overlay, (), 'WINDOW', 'POST_PIXEL'
+        )
+
+    _register_keymaps()
+
 
 def unregister():
+    global _draw_handle
+
+    _unregister_keymaps()
+
+    if _draw_handle is not None:
+        bpy.types.SpaceImageEditor.draw_handler_remove(_draw_handle, 'WINDOW')
+        _draw_handle = None
+
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
+
+    for name in (
+        'xqfa_uv_snap_layers',
+        'xqfa_uv_snap_active_layer',
+        'xqfa_uv_snap_show_overlay',
+        'xqfa_uv_snap_show_names',
+        'xqfa_uv_snap_marker_size',
+        'xqfa_uv_snap_enabled',
+        'xqfa_uv_snap_distance',
+    ):
+        if hasattr(bpy.types.Scene, name):
+            delattr(bpy.types.Scene, name)

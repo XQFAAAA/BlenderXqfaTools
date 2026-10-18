@@ -47,8 +47,10 @@ class O_AddUVMaps(bpy.types.Operator):
         active_data = [v.uv.copy() for v in uv_layers.active.data] if uv_layers.active else None
 
         # 1. 删除所有原有层（使列表清空，后续新层自然排在最前）
-        for l in list(uv_layers):
-            uv_layers.remove(l)
+        # 必须从后往前按索引删除：list(uv_layers) 取得的层引用在删除后即失效，
+        # 继续用失效引用删除会删错层并抛出 "UV map ... not found"，导致UV层被破坏
+        for i in range(len(uv_layers) - 1, -1, -1):
+            uv_layers.remove(uv_layers[i])
 
         # 2. 创建新层并复制活动UV的数据
         for i in range(count):

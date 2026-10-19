@@ -1,5 +1,9 @@
 # type: ignore
+import colorsys
+import json
 import math
+import os
+import random
 
 import bmesh
 import blf
@@ -25,14 +29,60 @@ def _uv_vert_selected(loop, uv_layer):
 # 同一文件内的任意物体、任意 UV 贴图都能使用这些吸附点
 # ---------------------------------------------------------------------------
 
-_PALETTE = (
-    (1.0, 0.5, 0.0, 1.0),
-    (0.2, 0.8, 1.0, 1.0),
-    (0.6, 0.4, 1.0, 1.0),
-    (0.4, 1.0, 0.4, 1.0),
-    (1.0, 0.4, 0.7, 1.0),
-    (1.0, 0.9, 0.2, 1.0),
-)
+_PALETTE_HUE_GAP = 0.12
+
+
+def _largest_gap_hue(existing_hues):
+    """在已有色相的最大空隙中间取一个新色相（带随机抖动）
+
+    色相空间放不下更多间隔时用它兜底，保证层数再多也尽量分散。
+    """
+    if not existing_hues:
+        return random.random()
+
+    hues = sorted(existing_hues)
+    best_gap = -1.0
+    best_start = 0.0
+    for i, start in enumerate(hues):
+        end = hues[(i + 1) % len(hues)]
+        gap = (end - start) % 1.0
+        if gap > best_gap:
+            best_gap, best_start = gap, start
+
+    # 落在最大空隙的中间一半，避免贴近两侧已有色相
+    jitter = random.uniform(0.25, 0.75) * best_gap
+    return (best_start + jitter) % 1.0
+
+
+def _random_distinct_color(existing_colors):
+    """生成一个与新层「随机但能分辨」的颜色（RGBA）
+
+    在 HSV 空间随机取色（高饱和、高亮度，避免灰暗难辨），并保证与已有
+    层颜色的色相环形距离不小于 _PALETTE_HUE_GAP；色相空间被占满（层数
+    较多）时退回最大空隙填充，让色相始终尽量均匀分散。
+    """
+    existing_hues = [
+        colorsys.rgb_to_hsv(c[0], c[1], c[2])[0] for c in existing_colors
+    ]
+
+    def _far_enough(hue):
+        return all(
+            min(abs(hue - h), 1.0 - abs(hue - h)) >= _PALETTE_HUE_GAP
+            for h in existing_hues
+        )
+
+    hue = random.random()
+    for _ in range(24):
+        if _far_enough(hue):
+            break
+        hue = random.random()
+    else:
+        hue = _largest_gap_hue(existing_hues)
+
+    sat = random.uniform(0.65, 1.0)
+    val = random.uniform(0.85, 1.0)
+    r, g, b = colorsys.hsv_to_rgb(hue, sat, val)
+    return (r, g, b, 1.0)
 
 
 class XQFA_UVSnapPoint(bpy.types.PropertyGroup):
@@ -59,9 +109,10 @@ def _active_layer(scene, create_if_missing=False):
     if 0 <= idx < len(layers):
         return layers[idx]
     if create_if_missing:
+        existing_colors = [tuple(l.color) for l in layers]
         layer = layers.add()
         layer.name = f"吸附层 {len(layers)}"
-        layer.color = _PALETTE[(len(layers) - 1) % len(_PALETTE)]
+        layer.color = _random_distinct_color(existing_colors)
         scene.xqfa_uv_snap_active_layer = len(layers) - 1
         return layer
     return None
@@ -206,9 +257,10 @@ class XQFA_OT_UVSnapAddLayer(bpy.types.Operator):
     def execute(self, context):
         scene = context.scene
         layers = scene.xqfa_uv_snap_layers
+        existing_colors = [tuple(l.color) for l in layers]
         layer = layers.add()
         layer.name = f"吸附层 {len(layers)}"
-        layer.color = _PALETTE[(len(layers) - 1) % len(_PALETTE)]
+        layer.color = _random_distinct_color(existing_colors)
         scene.xqfa_uv_snap_active_layer = len(layers) - 1
         return {'FINISHED'}
 
@@ -285,6 +337,124 @@ class XQFA_OT_UVSnapAddSelected(bpy.types.Operator):
         layer = _active_layer(context.scene, create_if_missing=True)
         added = sum(1 for (u, v) in coords if _add_point(layer, u, v))
         self.report({'INFO'}, f"已添加 {added} 个吸附点（选中 {len(coords)} 个）")
+        return {'FINISHED'}
+
+
+# ---------------------------------------------------------------------------
+# 预设：保存 / 加载吸附层（文件存放在插件目录下的 uv_snap_presets 文件夹）
+# ---------------------------------------------------------------------------
+
+_PRESET_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "uv_snap_presets"
+)
+_INVALID_FILENAME_CHARS = '<>:"/\\|?*'
+
+
+def _ensure_preset_dir():
+    os.makedirs(_PRESET_DIR, exist_ok=True)
+
+
+def _safe_preset_name(name):
+    """把用户输入的名称转成安全的文件名（去掉非法字符）"""
+    cleaned = "".join(c for c in name if c not in _INVALID_FILENAME_CHARS).strip()
+    return cleaned or "预设"
+
+
+def _list_preset_files():
+    """预设目录下所有 .json 预设文件名（已排序），目录不存在时返回空"""
+    try:
+        files = os.listdir(_PRESET_DIR)
+    except OSError:
+        return []
+    return sorted(f for f in files if f.lower().endswith(".json"))
+
+
+def _preset_enum_items(self, context):
+    return [(f, os.path.splitext(f)[0], "") for f in _list_preset_files()]
+
+
+def _serialize_layers(scene):
+    return [
+        {
+            "name": layer.name,
+            "color": list(layer.color),
+            "enabled": layer.enabled,
+            "points": [[p.u, p.v] for p in layer.points],
+        }
+        for layer in scene.xqfa_uv_snap_layers
+    ]
+
+
+def _apply_layers(scene, layers_data):
+    """用预设数据整体替换场景里的吸附层"""
+    layers = scene.xqfa_uv_snap_layers
+    for i in range(len(layers) - 1, -1, -1):
+        layers.remove(i)
+    for data in layers_data:
+        layer = layers.add()
+        layer.name = data.get("name") or "吸附层"
+        color = data.get("color") or (1.0, 0.5, 0.0, 1.0)
+        layer.color = tuple(float(c) for c in color)
+        layer.enabled = bool(data.get("enabled", True))
+        for u, v in data.get("points", []):
+            p = layer.points.add()
+            p.u = float(u)
+            p.v = float(v)
+    scene.xqfa_uv_snap_active_layer = len(layers) - 1 if len(layers) else 0
+
+
+class XQFA_OT_UVSnapSavePreset(bpy.types.Operator):
+    """把当前所有吸附层保存为插件目录下的预设文件"""
+    bl_idname = "xqfa.uv_snap_save_preset"
+    bl_label = "保存预设"
+    bl_description = "把当前所有吸附层保存到插件目录（uv_snap_presets）"
+    bl_options = {'REGISTER'}
+
+    preset_name: bpy.props.StringProperty(name="预设名", default="预设")
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self, width=240)
+
+    def execute(self, context):
+        name = _safe_preset_name(self.preset_name)
+        try:
+            _ensure_preset_dir()
+            path = os.path.join(_PRESET_DIR, f"{name}.json")
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump({"layers": _serialize_layers(context.scene)}, f,
+                          ensure_ascii=False, indent=2)
+        except OSError as e:
+            self.report({'ERROR'}, f"保存预设失败：{e}")
+            return {'CANCELLED'}
+        self.report({'INFO'}, f"已保存预设「{name}」")
+        return {'FINISHED'}
+
+
+class XQFA_OT_UVSnapLoadPreset(bpy.types.Operator):
+    """从插件目录加载预设，替换当前所有吸附层"""
+    bl_idname = "xqfa.uv_snap_load_preset"
+    bl_label = "加载预设"
+    bl_description = "从插件目录加载预设，替换当前所有吸附层"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    preset: bpy.props.EnumProperty(name="预设", items=_preset_enum_items)
+
+    def invoke(self, context, event):
+        if not _list_preset_files():
+            self.report({'WARNING'}, "插件目录下没有任何预设")
+            return {'CANCELLED'}
+        return context.window_manager.invoke_props_dialog(self, width=240)
+
+    def execute(self, context):
+        path = os.path.join(_PRESET_DIR, self.preset)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            _apply_layers(context.scene, data.get("layers", []))
+        except (OSError, ValueError, TypeError) as e:
+            self.report({'ERROR'}, f"读取预设失败：{e}")
+            return {'CANCELLED'}
+        self.report({'INFO'}, f"已加载预设「{os.path.splitext(self.preset)[0]}」")
         return {'FINISHED'}
 
 
@@ -646,6 +816,13 @@ class XQFA_PT_UVSnapPoints(bpy.types.Panel):
         row.prop(scene, "xqfa_uv_snap_show_names", text="显示层名")
         row.prop(scene, "xqfa_uv_snap_marker_size", text="大小")
 
+        row = layout.row(align=True)
+        row.prop(
+            scene, "xqfa_uv_snap_enabled",
+            text="启用吸附", toggle=True, icon='SNAP_ON',
+        )
+        row.prop(scene, "xqfa_uv_snap_distance", text="距离")
+
         row = layout.row()
         row.template_list(
             "XQFA_UL_UVSnapLayers", "",
@@ -657,19 +834,13 @@ class XQFA_PT_UVSnapPoints(bpy.types.Panel):
         col2.operator(XQFA_OT_UVSnapAddLayer.bl_idname, icon='ADD', text="")
         col2.operator(XQFA_OT_UVSnapRemoveLayer.bl_idname, icon='REMOVE', text="")
         col2.separator()
-        col2.operator(XQFA_OT_UVSnapClearLayer.bl_idname, icon='TRASH', text="")
+        col2.operator(XQFA_OT_UVSnapLoadPreset.bl_idname, icon='IMPORT', text="")
+        col2.operator(XQFA_OT_UVSnapSavePreset.bl_idname, icon='EXPORT', text="")
 
-        layout.operator(XQFA_OT_UVSnapAddSelected.bl_idname, text="指定")
+        row = layout.row(align=True)
+        row.operator(XQFA_OT_UVSnapAddSelected.bl_idname, text="指定")
+        row.operator(XQFA_OT_UVSnapClearLayer.bl_idname, text="清空")
 
-        box = layout.box()
-        box.label(text="吸附移动")
-        row = box.row(align=True)
-        row.prop(
-            scene, "xqfa_uv_snap_enabled",
-            text="启用吸附", toggle=True, icon='SNAP_ON',
-        )
-        row.prop(scene, "xqfa_uv_snap_distance", text="距离")
-        box.operator(XQFA_OT_UVSnapMove.bl_idname, text="吸附移动（G）")
 
 # ---------------------------------------------------------------------------
 # 注册
@@ -682,6 +853,8 @@ classes = (
     XQFA_OT_UVSnapRemoveLayer,
     XQFA_OT_UVSnapClearLayer,
     XQFA_OT_UVSnapAddSelected,
+    XQFA_OT_UVSnapSavePreset,
+    XQFA_OT_UVSnapLoadPreset,
     XQFA_OT_UVSnapMove,
     XQFA_UL_UVSnapLayers,
     XQFA_PT_UVSnapPoints,

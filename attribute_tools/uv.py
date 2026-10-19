@@ -30,6 +30,7 @@ class DATA_PT_uv_map_tools(bpy.types.Panel):
         col.separator()
         col.operator(XQFA_OT_OctahedralUV.bl_idname, icon='UV')
         col.operator(XQFA_OT_ScaleUVIslands.bl_idname, icon='UV_DATA')
+        col.operator(XQFA_OT_ProjectUVFromView.bl_idname, icon='UV_DATA')
 
 
 class O_AddUVMaps(bpy.types.Operator):
@@ -229,6 +230,124 @@ class O_RemoveUVMaps(bpy.types.Operator):
         context.view_layer.update()
         self.report({'INFO'}, f"处理完成: {processed_objects}个物体, 删除了{removed_maps}个UV贴图")
         return {'FINISHED'}
+
+class XQFA_OT_ProjectUVFromView(bpy.types.Operator):
+    """将选中物体的活动UV设为TEXCOORD3.xy并按当前视角投影"""
+    bl_idname = "xqfa.uv_project_from_view"
+    bl_label = "视角投影UV"
+    bl_description = ("对所有选中物体\n"
+                      "将活动UV设置为TEXCOORD3.xy（没有则新建）\n"
+                      "进入编辑模式全选面，并按当前视角投影UV\n"
+                      "整体计算UV包围框，按高度等比缩放至0.95并移至UV中心(0.5, 0.5)")
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.selected_objects is not None and len(context.selected_objects) > 0
+
+    def execute(self, context):
+        # 确保处于物体模式（数据一致）
+        if context.object and context.object.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+
+        target_name = "TEXCOORD3.xy"
+        project_objs = []
+
+        for obj in context.selected_objects:
+            if obj.type != 'MESH':
+                continue
+            uv_layers = obj.data.uv_layers
+            if target_name in uv_layers:
+                uv_layers.active = uv_layers[target_name]
+            else:
+                new_layer = uv_layers.new(name=target_name)
+                if new_layer is None:
+                    self.report({'WARNING'}, f"物体 {obj.name} 新建 {target_name} 失败：网格没有面或已达8个UV上限")
+                    continue
+                uv_layers.active = new_layer
+            project_objs.append(obj)
+
+        if not project_objs:
+            self.report({'WARNING'}, "没有可处理的网格物体")
+            return {'CANCELLED'}
+
+        # project_from_view 依赖3D视口的区域数据计算投影矩阵，
+        # 面板按钮点击时 context.region 是UI区域，需临时覆盖为3D视口的WINDOW区域
+        screen = context.screen
+        area = context.area
+        if area is None or area.type != 'VIEW_3D':
+            area = next((a for a in screen.areas if a.type == 'VIEW_3D'), None) if screen else None
+        if area is None:
+            self.report({'WARNING'}, "找不到3D视口，无法按视角投影")
+            return {'CANCELLED'}
+        region = next((r for r in area.regions if r.type == 'WINDOW'), None)
+
+        # 进入（多物体）编辑模式，全选所有面，按当前视角投影UV
+        context.view_layer.objects.active = project_objs[0]
+        for obj in project_objs:
+            obj.select_set(True)
+        with context.temp_override(area=area, region=region):
+            bpy.ops.object.mode_set(mode='EDIT')
+            bpy.ops.mesh.select_all(action='SELECT')
+            bpy.ops.uv.project_from_view()
+            bpy.ops.object.mode_set(mode='OBJECT')
+
+        # 整体计算UV包围框：按高度等比缩放至0.95，并把包围框中心移到UV中心(0.5, 0.5)
+        if not self._fit_uv_joint(project_objs):
+            self.report({'WARNING'}, "UV包围框高度为0或无UV数据，已跳过缩放居中")
+
+        # 强制刷新所有区域
+        for a in context.screen.areas:
+            a.tag_redraw()
+        context.view_layer.update()
+        self.report({'INFO'}, f"处理完成: {len(project_objs)}个物体, 活动UV已设为{target_name}, 视角投影并缩放0.95居中")
+        return {'FINISHED'}
+
+    @staticmethod
+    def _fit_uv_joint(objs, target_height=0.95, center=(0.5, 0.5)):
+        """将多个物体的活动UV视为整体：等比缩放使包围框高度为target_height，并把包围框中心移到center"""
+        flats = []
+        for obj in objs:
+            uv_data = obj.data.uv_layers.active.data
+            count = len(uv_data)
+            if count == 0:
+                continue
+            flat = [0.0] * (count * 2)
+            uv_data.foreach_get("uv", flat)
+            flats.append((uv_data, flat))
+
+        if not flats:
+            return False
+
+        min_u = min_v = math.inf
+        max_u = max_v = -math.inf
+        for _, flat in flats:
+            for i in range(0, len(flat), 2):
+                u = flat[i]
+                v = flat[i + 1]
+                if u < min_u:
+                    min_u = u
+                if u > max_u:
+                    max_u = u
+                if v < min_v:
+                    min_v = v
+                if v > max_v:
+                    max_v = v
+
+        box_h = max_v - min_v
+        if box_h < 1e-9:
+            return False
+
+        scale = target_height / box_h
+        center_u = (min_u + max_u) * 0.5
+        center_v = (min_v + max_v) * 0.5
+
+        for uv_data, flat in flats:
+            for i in range(0, len(flat), 2):
+                flat[i] = (flat[i] - center_u) * scale + center[0]
+                flat[i + 1] = (flat[i + 1] - center_v) * scale + center[1]
+            uv_data.foreach_set("uv", flat)
+        return True
 
 def unit_vector_to_octahedron(n):
     """
@@ -566,6 +685,7 @@ classes = (
     O_RemoveUVMaps,
     XQFA_OT_OctahedralUV,
     XQFA_OT_ScaleUVIslands,
+    XQFA_OT_ProjectUVFromView,
 )
 
 def register():

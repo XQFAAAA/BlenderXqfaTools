@@ -1,5 +1,6 @@
 # type: ignore
 import bpy
+import bmesh
 from bpy.props import IntProperty, FloatProperty, PointerProperty
 
 
@@ -31,6 +32,14 @@ class XQFA_PT_Demo(bpy.types.Panel):
         col.operator(XQFA_OT_UndoTriSubdivide.bl_idname, icon='MESH_DATA')
         col.separator()
         col.operator(XQFA_OT_ConvertCustomNormals.bl_idname, icon='NORMALS_FACE')
+        col.separator()
+        # 按编号选择顶点
+        obj = context.active_object
+        in_edit = obj is not None and obj.type == 'MESH' and obj.mode == 'EDIT'
+        label = f"编号 (0-{len(obj.data.vertices) - 1})" if in_edit else "编号"
+        row = col.row(align=True)
+        row.prop(context.scene, "xqfa_vertex_index", text=label)
+        row.operator(XQFA_OT_SelectVertexByIndex.bl_idname, text="选择", icon='RESTRICT_SELECT_OFF')
 
 
 
@@ -292,6 +301,50 @@ class XQFA_OT_SelectNegativeX(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class XQFA_OT_SelectVertexByIndex(bpy.types.Operator):
+    """按编号选择活动物体的顶点"""
+    bl_idname = "xqfa.select_vertex_by_index"
+    bl_label = "按编号选择顶点"
+    bl_description = ("在编辑模式中按编号选择活动物体的顶点\n"
+                      "编号从 0 开始，上限为顶点数-1")
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        return obj is not None and obj.type == 'MESH' and obj.mode == 'EDIT'
+
+    def execute(self, context):
+        obj = context.active_object
+        bm = bmesh.from_edit_mesh(obj.data)
+
+        count = len(bm.verts)
+        if count == 0:
+            self.report({'WARNING'}, "活动物体没有顶点")
+            return {'CANCELLED'}
+
+        number = context.scene.xqfa_vertex_index
+        if number < 0:
+            self.report({'WARNING'}, "编号必须从 0 开始")
+            return {'CANCELLED'}
+        if number >= count:
+            self.report({'WARNING'}, f"编号超出范围（0-{count - 1}），已选择最后一个顶点")
+            number = count - 1
+
+        bm.verts.ensure_lookup_table()
+        for v in bm.verts:
+            v.select = False
+        for e in bm.edges:
+            e.select = False
+        for f in bm.faces:
+            f.select = False
+        bm.verts[number].select = True
+        bmesh.update_edit_mesh(obj.data)
+
+        self.report({'INFO'}, f"已选择顶点 {number} / {count - 1}")
+        return {'FINISHED'}
+
+
 class XQFA_OT_UndoTriSubdivide(bpy.types.Operator):
     bl_idname = "xqfa.undo_tri_subdivide"
     bl_label = "还原三角面中点细分"
@@ -540,6 +593,7 @@ classes = (
     XQFA_OT_BatchDeleteModifiers,
     XQFA_OT_SelectWithChildren,
     XQFA_OT_SelectNegativeX,
+    XQFA_OT_SelectVertexByIndex,
     XQFA_OT_UndoTriSubdivide,
     XQFA_OT_ConvertCustomNormals,
 )
@@ -548,12 +602,22 @@ def register():
     for cls in classes:
         bpy.utils.register_class(cls)
 
+    bpy.types.Scene.xqfa_vertex_index = IntProperty(
+        name="顶点编号",
+        description="要选择的顶点编号（从 0 开始，上限为顶点数-1）",
+        default=0,
+        min=0,
+    )
+
 
 
 
 def unregister():
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
+
+    if hasattr(bpy.types.Scene, "xqfa_vertex_index"):
+        del bpy.types.Scene.xqfa_vertex_index
 
     
 

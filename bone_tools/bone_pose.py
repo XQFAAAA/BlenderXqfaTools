@@ -21,6 +21,281 @@ def _select_pose_bone(pose_bone, select=True):
 # 形如 {'POSITION': Vector, 'EULER': Euler, 'QUATERNION': Quaternion, 'MATRIX': Matrix, 'MATRIX_BASIS': Matrix}
 _bone_pose_clipboard = {}
 
+
+def _get_registered_skkeeper_operator():
+    """返回已注册的 SKkeeper operator，不能用 hasattr 判断动态 bpy.ops。"""
+    try:
+        operator = bpy.ops.sk.apply_mods_sk
+        # bpy.ops 的动态属性即使未注册也可能可以取到；RNA 查询才是有效检查。
+        operator.get_rna_type()
+    except (AttributeError, KeyError, RuntimeError):
+        return None
+    return operator
+
+
+def _select_single_object(context, obj):
+    """为需要 active/selected 上下文的 Blender operator 设置对象。"""
+    for selected in tuple(context.selected_objects):
+        selected.select_set(False)
+    obj.select_set(True)
+    context.view_layer.objects.active = obj
+
+
+def _restore_object_selection(context, active_object, selected_objects):
+    """恢复修改器应用前的对象选择，忽略已被外部 operator 删除的对象。"""
+    for selected in tuple(context.selected_objects):
+        selected.select_set(False)
+
+    for obj in selected_objects:
+        try:
+            if obj.name in bpy.data.objects:
+                obj.select_set(True)
+        except ReferenceError:
+            continue
+
+    try:
+        if active_object is not None and active_object.name in bpy.data.objects:
+            context.view_layer.objects.active = active_object
+        else:
+            context.view_layer.objects.active = None
+    except ReferenceError:
+        context.view_layer.objects.active = None
+
+
+def _copy_object_for_modifier_apply(obj, suffix):
+    """复制对象及网格数据，并链接到原对象所在的集合。"""
+    copied = obj.copy()
+    copied.data = obj.data.copy()
+    copied.name = f"{obj.name}{suffix}"
+
+    collections = list(obj.users_collection)
+    if collections:
+        for collection in collections:
+            collection.objects.link(copied)
+    else:
+        bpy.context.collection.objects.link(copied)
+
+    return copied
+
+
+def _remove_temporary_object(obj):
+    """删除内部烘焙使用的临时对象及其不再使用的网格数据。"""
+    if obj is None:
+        return
+
+    try:
+        mesh_data = obj.data
+        bpy.data.objects.remove(obj, do_unlink=True)
+        if mesh_data is not None and mesh_data.users == 0:
+            bpy.data.meshes.remove(mesh_data)
+    except ReferenceError:
+        return
+
+
+def _bake_shape_key_to_base(obj, shape_key_name):
+    """把指定形态键的坐标写入网格基准，再移除该对象上的所有形态键。"""
+    shape_keys = obj.data.shape_keys
+    if shape_keys is None:
+        raise RuntimeError(f"对象 {obj.name} 没有形态键 {shape_key_name}")
+
+    shape_key = shape_keys.key_blocks.get(shape_key_name)
+    if shape_key is None:
+        raise RuntimeError(f"对象 {obj.name} 找不到形态键 {shape_key_name}")
+    if len(shape_key.data) != len(obj.data.vertices):
+        raise RuntimeError(f"形态键 {shape_key_name} 与网格顶点数量不一致")
+
+    coordinates = [point.co.copy() for point in shape_key.data]
+    for vertex, coordinate in zip(obj.data.vertices, coordinates):
+        vertex.co = coordinate
+
+    # 移除其它键后再移除目标键；目标坐标已经写入网格基准，不会丢失形状。
+    other_shape_key_names = [
+        key_block.name
+        for key_block in shape_keys.key_blocks
+        if key_block.name != shape_key_name
+    ]
+    for other_name in other_shape_key_names:
+        other_shape_key = obj.data.shape_keys.key_blocks.get(other_name)
+        if other_shape_key is not None:
+            obj.shape_key_remove(other_shape_key)
+
+    target_shape_key = obj.data.shape_keys.key_blocks.get(shape_key_name)
+    if target_shape_key is not None:
+        obj.shape_key_remove(target_shape_key)
+
+
+def _convert_mesh_with_blender(context, obj):
+    """使用 Blender 的 convert operator 应用完整修改器栈。"""
+    _select_single_object(context, obj)
+    try:
+        result = bpy.ops.object.convert(target='MESH')
+    except Exception as exc:
+        raise RuntimeError(f"Blender 原生应用修改器失败: {exc}") from exc
+
+    if 'FINISHED' not in result:
+        raise RuntimeError(f"Blender 原生应用修改器未完成: {result}")
+    if obj.type != 'MESH':
+        raise RuntimeError(f"修改器应用后对象 {obj.name} 不再是网格")
+
+
+def _get_shape_key_metadata(obj):
+    """读取形态键名称、值和相对键等可迁移属性。"""
+    shape_keys = obj.data.shape_keys
+    return {
+        "use_relative": shape_keys.use_relative,
+        "blocks": [
+            {
+                "name": key_block.name,
+                "value": key_block.value,
+                "mute": key_block.mute,
+                "slider_min": key_block.slider_min,
+                "slider_max": key_block.slider_max,
+                "vertex_group": key_block.vertex_group,
+                "frame": key_block.frame,
+                "interpolation": key_block.interpolation,
+                "relative_name": (
+                    key_block.relative_key.name
+                    if key_block.relative_key is not None
+                    else None
+                ),
+            }
+            for key_block in shape_keys.key_blocks
+        ],
+    }
+
+
+def _apply_shape_key_metadata(shape_key, metadata):
+    """迁移形态键属性，兼容 Blender 5.2 中只读的元数据字段。"""
+    for attribute in (
+        "value",
+        "mute",
+        "slider_min",
+        "slider_max",
+        "vertex_group",
+        "frame",
+        "interpolation",
+    ):
+        try:
+            setattr(shape_key, attribute, metadata[attribute])
+        except (AttributeError, RuntimeError):
+            # Blender 5.2 的 frame/interpolation 等字段可能只读，保留默认值。
+            continue
+
+
+def _copy_shape_key_drivers(source_obj, destination_obj):
+    """复制形态键驱动器，并把目标对象引用改到新对象。"""
+    source_shape_keys = source_obj.data.shape_keys
+    destination_shape_keys = destination_obj.data.shape_keys
+    if source_shape_keys is None or source_shape_keys.animation_data is None:
+        return
+    if not source_shape_keys.animation_data.drivers:
+        return
+
+    destination_shape_keys.animation_data_create()
+    for source_driver in source_shape_keys.animation_data.drivers:
+        destination_driver = destination_shape_keys.animation_data.drivers.from_existing(
+            src_driver=source_driver
+        )
+        for variable in destination_driver.driver.variables:
+            for target in variable.targets:
+                if target.id == source_obj:
+                    target.id = destination_obj
+
+
+def _apply_modifiers_keep_shape_keys(context, obj):
+    """在不依赖 SKkeeper 的情况下应用修改器并保留形态键。"""
+    metadata = _get_shape_key_metadata(obj)
+    original_active = context.view_layer.objects.active
+    original_selected = tuple(context.selected_objects)
+    receiver = None
+    temporary_objects = []
+
+    try:
+        receiver = _copy_object_for_modifier_apply(obj, "__xqfa_receiver")
+        _bake_shape_key_to_base(receiver, metadata["blocks"][0]["name"])
+        _convert_mesh_with_blender(context, receiver)
+
+        base_metadata = metadata["blocks"][0]
+        base_shape_key = receiver.shape_key_add(
+            name=base_metadata["name"], from_mix=False
+        )
+        _apply_shape_key_metadata(base_shape_key, base_metadata)
+        receiver_shape_keys = receiver.data.shape_keys
+        receiver_shape_keys.use_relative = metadata["use_relative"]
+
+        for index, block_metadata in enumerate(metadata["blocks"][1:], start=1):
+            donor = _copy_object_for_modifier_apply(
+                obj, f"__xqfa_donor_{index}"
+            )
+            temporary_objects.append(donor)
+            _bake_shape_key_to_base(donor, block_metadata["name"])
+            _convert_mesh_with_blender(context, donor)
+
+            if len(donor.data.vertices) != len(receiver.data.vertices):
+                raise RuntimeError(
+                    f"形态键 {block_metadata['name']} 应用修改器后顶点数量发生变化"
+                )
+
+            new_shape_key = receiver.shape_key_add(
+                name=block_metadata["name"], from_mix=False
+            )
+            for vertex, shape_key_point in zip(
+                donor.data.vertices, new_shape_key.data
+            ):
+                shape_key_point.co = vertex.co
+
+            _apply_shape_key_metadata(new_shape_key, block_metadata)
+            _remove_temporary_object(donor)
+            temporary_objects.remove(donor)
+
+        for block_metadata in metadata["blocks"]:
+            receiver_block = receiver_shape_keys.key_blocks.get(
+                block_metadata["name"]
+            )
+            if receiver_block is None:
+                raise RuntimeError(
+                    f"重建后找不到形态键 {block_metadata['name']}"
+                )
+            relative_name = block_metadata["relative_name"]
+            relative_block = receiver_shape_keys.key_blocks.get(relative_name)
+            if relative_block is not None:
+                receiver_block.relative_key = relative_block
+
+        _copy_shape_key_drivers(obj, receiver)
+
+        original_name = obj.name
+        original_data = obj.data
+        bpy.data.objects.remove(obj, do_unlink=True)
+        if original_data.users == 0:
+            bpy.data.meshes.remove(original_data)
+        receiver.name = original_name
+        _select_single_object(context, receiver)
+        return receiver
+    except Exception:
+        for temporary in list(temporary_objects):
+            _remove_temporary_object(temporary)
+        if receiver is not None:
+            _remove_temporary_object(receiver)
+        _restore_object_selection(context, original_active, original_selected)
+        raise
+
+
+def _apply_modifiers_with_blender(context, obj):
+    """应用完整修改器栈；有形态键时同步烘焙并保留所有形态键。"""
+    if obj.type != 'MESH':
+        raise RuntimeError(f"对象 {obj.name} 不是网格，无法应用修改器")
+
+    if obj.data.shape_keys and len(obj.data.shape_keys.key_blocks) > 0:
+        return _apply_modifiers_keep_shape_keys(context, obj)
+
+    original_active = context.view_layer.objects.active
+    original_selected = tuple(context.selected_objects)
+    try:
+        _convert_mesh_with_blender(context, obj)
+        return obj
+    finally:
+        _restore_object_selection(context, original_active, original_selected)
+
 class PG_BonePoseWorldProps(bpy.types.PropertyGroup):
     #注册切换矩阵显示的布尔值
     pose_matrix: bpy.props.BoolProperty(
@@ -255,7 +530,7 @@ class O_BonePoseAutoStraighten(bpy.types.Operator):
 class O_BonePoseApply(bpy.types.Operator):
     bl_idname = "xqfa.pose_apply"
     bl_label = "应用骨架和姿态"
-    bl_description = ""
+    bl_description = "应用当前姿态为静置姿态；未安装 SKkeeper 时使用 Blender 原生修改器应用"
     def execute(self, context):
         # 获取当前骨架的名称
         armature_name = bpy.context.active_object.name
@@ -264,15 +539,16 @@ class O_BonePoseApply(bpy.types.Operator):
         # 获取当前骨架对象
         armature = bpy.data.objects[armature_name]
 
-        # 检查 SKkeeper 插件是否可用
-        if not hasattr(bpy.ops.sk, 'apply_mods_sk'):
-            self.report({'ERROR'}, "需要安装 SKkeeper 插件")
-            return {'CANCELLED'}
+        # bpy.ops 的动态属性不能用 hasattr 判断 operator 是否真实注册。
+        # SKkeeper 可用时沿用其处理逻辑，否则使用 Blender 原生回退路径。
+        skkeeper_operator = _get_registered_skkeeper_operator()
+        if skkeeper_operator is None:
+            self.report({'INFO'}, "未检测到 SKkeeper，使用 Blender 原生修改器应用")
 
         # 创建一个列表来存储满足条件的对象
         objects_to_modify = []
         # 遍历骨架的子级物体
-        for child in armature.children:
+        for child in list(armature.children):
             # 检查子级物体上是否有骨架修改器
             if not any(
                 mod.type == 'ARMATURE' and mod.object == armature
@@ -290,30 +566,37 @@ class O_BonePoseApply(bpy.types.Operator):
 
             # 将子级物体设为活动对象
             try:
-                bpy.context.view_layer.objects.active = child
+                _select_single_object(context, child)
             except:
                 self.report({'WARNING'}, f"无法设为活动物体 {child.name}，已跳过")
                 continue
 
-            # 调用 SKkeeper 应用所有修改器为形态键
+            # 优先使用 SKkeeper；未安装时使用 Blender 原生 API 应用全部修改器。
             child_name = child.name
             try:
-                bpy.ops.sk.apply_mods_sk()
-            except Exception as e:
-                self.report({'WARNING'}, f"SKkeeper 处理失败 [{child_name}]: {e}")
-                continue
+                if skkeeper_operator is not None:
+                    result = skkeeper_operator()
+                    if 'FINISHED' not in result:
+                        raise RuntimeError(f"SKkeeper 未完成处理: {result}")
 
-            # SKkeeper 会销毁原物体并创建新物体，需要通过名称重新获取
-            child = bpy.data.objects.get(child_name)
-            if child is None:
-                self.report({'WARNING'}, f"SKkeeper 处理后找不到物体 {child_name}，已跳过")
-                continue
+                    # SKkeeper 会销毁原物体并创建新物体，需要通过名称重新获取。
+                    child = bpy.data.objects.get(child_name)
+                    if child is None:
+                        raise RuntimeError(
+                            f"SKkeeper 处理后找不到物体 {child_name}"
+                        )
+                else:
+                    child = _apply_modifiers_with_blender(context, child)
+            except Exception as e:
+                self.report({'ERROR'}, f"应用修改器失败 [{child_name}]：{e}")
+                _select_single_object(context, armature)
+                return {'CANCELLED'}
 
             objects_to_modify.append(child)
 
 
         # 将骨架设为活动对象，进入姿态模式 应用姿态
-        bpy.context.view_layer.objects.active = armature
+        _select_single_object(context, armature)
         bpy.ops.object.mode_set(mode='POSE')
         bpy.ops.pose.armature_apply(selected=False)
         
@@ -326,7 +609,7 @@ class O_BonePoseApply(bpy.types.Operator):
             modifier.object = armature
             
         # 将骨架设为活动对象
-        bpy.context.view_layer.objects.active = armature
+        _select_single_object(context, armature)
         try:
             for fc in armature.animation_data.action.fcurves:
                 # 删除关键帧

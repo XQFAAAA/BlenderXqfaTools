@@ -295,6 +295,9 @@ class O_BonePoseApply(bpy.types.Operator):
                 self.report({'WARNING'}, f"无法设为活动物体 {child.name}，已跳过")
                 continue
 
+            # 记录原物体所在的集合，SKkeeper 重建物体后会丢失该归属
+            original_collections = list(child.users_collection)
+
             # 调用 SKkeeper 应用所有修改器为形态键
             child_name = child.name
             try:
@@ -308,6 +311,20 @@ class O_BonePoseApply(bpy.types.Operator):
             if child is None:
                 self.report({'WARNING'}, f"SKkeeper 处理后找不到物体 {child_name}，已跳过")
                 continue
+
+            # 恢复物体原来的集合归属，并从多余集合中移除
+            for coll in list(child.users_collection):
+                if coll not in original_collections:
+                    try:
+                        coll.objects.unlink(child)
+                    except Exception:
+                        pass
+            for coll in original_collections:
+                try:
+                    if child.name not in coll.objects:
+                        coll.objects.link(child)
+                except Exception:
+                    pass
 
             objects_to_modify.append(child)
 

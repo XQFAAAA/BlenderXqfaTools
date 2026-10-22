@@ -1,5 +1,6 @@
 # type: ignore
 import bpy
+import bmesh
 import mathutils
 from mathutils import Vector
 import math
@@ -423,6 +424,86 @@ def calc_smooth_normals(mesh):
     
     return vertex_normals
 
+def calc_loop_tangents(mesh):
+    """计算每个loop的切线空间基，返回按loop索引排列的 (tangent, bitangent, normal) 列表
+
+    mesh.calc_tangents() 只支持三角形/四边形，遇到N-gon会抛出 RuntimeError；
+    此时改为在仅三角化N-gon的副本网格上计算，再按角点累加平均后映射回原始loop，
+    法线分量统一使用原网格的 loop.normal。
+    """
+    tangents = [None] * len(mesh.loops)
+
+    try:
+        mesh.calc_tangents()
+    except RuntimeError:
+        mesh.free_tangents()
+    else:
+        for loop in mesh.loops:
+            tangents[loop.index] = (loop.tangent.copy(), loop.bitangent.copy(), loop.normal.copy())
+        mesh.free_tangents()
+        return tangents
+
+    # N-gon回退方案：只三角化N-gon，三角形/四边形保持原生结果
+    bm = bmesh.new()
+    bm.from_mesh(mesh)
+    face_layer = bm.faces.layers.int.new("xqfa_tangent_orig_face")
+    for face in bm.faces:
+        face[face_layer] = face.index
+    ngons = [face for face in bm.faces if len(face.verts) > 4]
+    if ngons:
+        bmesh.ops.triangulate(bm, faces=ngons, quad_method='BEAUTY', ngon_method='BEAUTY')
+    # 记录三角化后每个面的原始面索引（bmesh写出网格时保持面顺序）
+    tri_face_orig = [face[face_layer] for face in bm.faces]
+
+    tmp_mesh = bpy.data.meshes.new("XQFA_TMP_TANGENTS")
+    try:
+        bm.to_mesh(tmp_mesh)
+        bm.free()
+        bm = None
+
+        if len(tmp_mesh.uv_layers) > 0:
+            tmp_mesh.uv_layers.active_index = 0
+        tmp_mesh.calc_tangents()
+
+        # 原loop索引 -> [切线累加, 副切线累加, 样本数]
+        accum = {}
+        for poly in tmp_mesh.polygons:
+            orig_poly = mesh.polygons[tri_face_orig[poly.index]] if poly.index < len(tri_face_orig) else None
+            if orig_poly is None:
+                continue
+            # 原始面内 顶点索引 -> 原始loop索引
+            orig_loop_of_vert = {}
+            for li in range(orig_poly.loop_start, orig_poly.loop_start + orig_poly.loop_total):
+                orig_loop_of_vert[mesh.loops[li].vertex_index] = li
+            for li in range(poly.loop_start, poly.loop_start + poly.loop_total):
+                loop = tmp_mesh.loops[li]
+                target = orig_loop_of_vert.get(loop.vertex_index)
+                if target is None:
+                    continue
+                acc = accum.get(target)
+                if acc is None:
+                    acc = accum[target] = [Vector((0.0, 0.0, 0.0)), Vector((0.0, 0.0, 0.0)), 0]
+                acc[0] += loop.tangent
+                acc[1] += loop.bitangent
+                acc[2] += 1
+
+        # 按角点平均：同一原角点被多个三角形共享时先累加再归一化，避免"最后写入者胜出"；
+        # 法线统一取原网格的 loop.normal，与非回退路径保持同一来源
+        for target, (tangent_sum, bitangent_sum, _count) in accum.items():
+            if tangent_sum.length_squared < 1e-12 or bitangent_sum.length_squared < 1e-12:
+                continue
+            tangents[target] = (
+                tangent_sum.normalized(),
+                bitangent_sum.normalized(),
+                mesh.loops[target].normal.copy(),
+            )
+    finally:
+        if bm is not None:
+            bm.free()
+        bpy.data.meshes.remove(tmp_mesh)
+
+    return tangents
+
 class XQFA_OT_OctahedralUV(bpy.types.Operator):
     """生成切线空间的八面体UV映射"""
     bl_idname = "xqfa.octahedral_uv"
@@ -480,8 +561,8 @@ class XQFA_OT_OctahedralUV(bpy.types.Operator):
         if len(mesh.uv_layers) == 0:
             mesh.uv_layers.new(name="UVMap")
         
-        # 计算切线空间（TBN矩阵）
-        mesh.calc_tangents()
+        # 计算切线空间（TBN矩阵），兼容含N-gon的网格
+        loop_tangents = calc_loop_tangents(mesh)
         
         # 创建/获取UV层
         uv_layer_name = "TEXCOORD1.xy"
@@ -500,10 +581,15 @@ class XQFA_OT_OctahedralUV(bpy.types.Operator):
                 normal = smooth_normals[vertex_idx]
 
                 # 构建TBN矩阵（切线空间到模型空间的变换）
+                basis = loop_tangents[loop_idx]
+                if basis is None:
+                    tangent, bitangent, loop_normal = Vector((1, 0, 0)), Vector((0, 1, 0)), poly.normal
+                else:
+                    tangent, bitangent, loop_normal = basis
                 tbn_matrix = mathutils.Matrix((
-                    loop.tangent,
-                    loop.bitangent,
-                    loop.normal
+                    tangent,
+                    bitangent,
+                    loop_normal
                 )).transposed() # 转置以从行向量变为列向量
                 
                 # 检查矩阵是否可逆
@@ -527,9 +613,6 @@ class XQFA_OT_OctahedralUV(bpy.types.Operator):
                 u = oct_coords.x
                 v = oct_coords.y + 1.0
                 uv_layer.data[loop_idx].uv = (u, v)
-        
-        # 释放切线数据
-        mesh.free_tangents()
         
         return True
 
